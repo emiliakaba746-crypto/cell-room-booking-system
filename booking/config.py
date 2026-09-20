@@ -6,6 +6,9 @@ import os
 from dataclasses import dataclass
 
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 @dataclass(frozen=True)

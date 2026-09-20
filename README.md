@@ -92,6 +92,19 @@ bash scripts/deploy.sh
 http://服务器公网IPv4
 ```
 
+如果服务器用户没有 Docker 权限，也可以使用非 root 方式部署：
+
+```bash
+cd /opt/cell-room-booking
+bash scripts/deploy-local.sh
+```
+
+默认监听 `8507` 端口。需要在腾讯云轻量应用服务器防火墙和服务器防火墙中放通 TCP `8507`，然后访问：
+
+```text
+http://服务器公网IPv4:8507
+```
+
 如果后续有域名，可以在服务器前面接入 Nginx/Caddy，并申请 HTTPS 证书。
 
 ## 五、数据库时间规则
@@ -117,3 +130,4 @@ http://服务器公网IPv4
 - 生产环境应使用 HTTPS。
 - 建议定期备份 Supabase 数据库。
 - 成员停用后保留历史预约记录，不直接删除账号。
+
