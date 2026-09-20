@@ -1,0 +1,9 @@
+services:
+  cell-room-booking:
+    build: .
+    container_name: cell-room-booking
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "80:8501"

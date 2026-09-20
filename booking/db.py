@@ -1,0 +1,218 @@
+"""Small database/service layer for the Streamlit UI."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from supabase import Client, create_client
+
+from .config import Settings
+from .utils import SHANGHAI, combine_local
+
+
+@dataclass
+class SessionUser:
+    id: str
+    email: str
+    profile: dict[str, Any]
+
+    @property
+    def role(self) -> str:
+        return str(self.profile.get("role") or "member")
+
+    @property
+    def status(self) -> str:
+        return str(self.profile.get("status") or "pending")
+
+    @property
+    def display_name(self) -> str:
+        return str(self.profile.get("display_name") or self.email or "用户")
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin" and self.status == "approved"
+
+    @property
+    def is_approved(self) -> bool:
+        return self.status == "approved"
+
+
+class BookingService:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.client: Client = create_client(settings.supabase_url, settings.supabase_anon_key)
+
+    def sign_in(self, email: str, password: str) -> SessionUser:
+        response = self.client.auth.sign_in_with_password({"email": email, "password": password})
+        if response.user is None or response.session is None:
+            raise RuntimeError("登录失败，请检查邮箱和密码。")
+        return self._load_user(response.user.id, response.user.email or email)
+
+    def sign_up(self, email: str, password: str, display_name: str, phone: str = "") -> SessionUser | None:
+        response = self.client.auth.sign_up(
+            {
+                "email": email,
+                "password": password,
+                "options": {
+                    "data": {
+                        "display_name": display_name,
+                        "phone": phone,
+                    }
+                },
+            }
+        )
+        if response.session is None:
+            raise RuntimeError("注册已提交，请先完成邮箱验证，然后返回登录。")
+        if response.user is None:
+            return None
+        return self._load_user(response.user.id, response.user.email or email)
+
+    def sign_out(self) -> None:
+        self.client.auth.sign_out()
+
+    def _load_user(self, user_id: str, email: str) -> SessionUser:
+        response = self.client.table("profiles").select("*").eq("id", user_id).maybe_single().execute()
+        profile = response.data or {"id": user_id, "email": email}
+        return SessionUser(id=user_id, email=email, profile=profile)
+
+    def current_user(self) -> SessionUser | None:
+        try:
+            response = self.client.auth.get_user()
+        except Exception:
+            return None
+        if response is None or response.user is None:
+            return None
+        return self._load_user(response.user.id, response.user.email or "")
+
+    def list_equipment(self, include_inactive: bool = False) -> list[dict[str, Any]]:
+        query = self.client.table("equipment").select("*").order("sort_order")
+        if not include_inactive:
+            query = query.eq("active", True)
+        return query.execute().data or []
+
+    def list_reservations(
+        self,
+        *,
+        day: date | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        user_id: str | None = None,
+        all_users: bool = False,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        query = (
+            self.client.table("reservations")
+            .select("*, equipment(id,name,type,location)")
+            .order("start_at")
+            .limit(limit)
+        )
+        if day is not None:
+            day_start = combine_local(day, 0, 0)
+            day_end = day_start + timedelta(days=1)
+            query = query.gte("start_at", day_start.isoformat()).lt("start_at", day_end.isoformat())
+        if start_at is not None:
+            query = query.gte("start_at", start_at.isoformat())
+        if end_at is not None:
+            query = query.lt("start_at", end_at.isoformat())
+        if user_id and not all_users:
+            query = query.eq("user_id", user_id)
+        return query.execute().data or []
+
+    def create_booking(
+        self,
+        *,
+        equipment_id: int,
+        start_at: datetime,
+        end_at: datetime,
+        purpose: str,
+    ) -> dict[str, Any]:
+        response = self.client.rpc(
+            "create_booking",
+            {
+                "p_equipment_id": equipment_id,
+                "p_start_at": start_at.isoformat(),
+                "p_end_at": end_at.isoformat(),
+                "p_purpose": purpose,
+            },
+        ).execute()
+        return response.data or {}
+
+    def cancel_booking(self, booking_id: str) -> None:
+        self.client.rpc("cancel_booking", {"p_booking_id": booking_id}).execute()
+
+    def start_usage(self, booking_id: str) -> None:
+        self.client.rpc("start_usage", {"p_booking_id": booking_id}).execute()
+
+    def complete_usage(self, booking_id: str, notes: str = "") -> None:
+        self.client.rpc("complete_usage", {"p_booking_id": booking_id, "p_notes": notes}).execute()
+
+    def set_profile_status(self, user_id: str, status: str) -> None:
+        self.client.table("profiles").update({"status": status}).eq("id", user_id).execute()
+
+    def set_profile_role(self, user_id: str, role: str) -> None:
+        self.client.table("profiles").update({"role": role}).eq("id", user_id).execute()
+
+    def update_my_profile(self, display_name: str, phone: str) -> None:
+        self.client.rpc(
+            "update_my_profile",
+            {"p_display_name": display_name, "p_phone": phone},
+        ).execute()
+
+    def promote_initial_admin(self) -> bool:
+        response = self.client.rpc("promote_initial_admin").execute()
+        return bool(response.data)
+
+    def upsert_equipment(
+        self,
+        *,
+        equipment_id: int | None,
+        name: str,
+        equipment_type: str,
+        location: str,
+        sort_order: int,
+        active: bool,
+    ) -> None:
+        payload = {
+            "name": name,
+            "type": equipment_type,
+            "location": location,
+            "sort_order": sort_order,
+            "active": active,
+        }
+        if equipment_id:
+            self.client.table("equipment").update(payload).eq("id", equipment_id).execute()
+        else:
+            self.client.table("equipment").insert(payload).execute()
+
+    def list_profiles(self) -> list[dict[str, Any]]:
+        return self.client.table("profiles").select("*").order("created_at", desc=True).execute().data or []
+
+    def usage_report(self, start_at: datetime, end_at: datetime) -> list[dict[str, Any]]:
+        response = (
+            self.client.table("reservation_usage_summary")
+            .select("*")
+            .gte("start_at", start_at.isoformat())
+            .lt("start_at", end_at.isoformat())
+            .order("start_at", desc=True)
+            .execute()
+        )
+        return response.data or []
+
+
+def first_error_message(error: Exception) -> str:
+    """Return a compact, user-facing error from supabase-py exceptions."""
+    message = str(error)
+    replacements = {
+        "duplicate key value violates unique constraint": "该时间段已被预约，请选择其他时间。",
+        "exclusion constraint": "该设备在所选时间段已有预约。",
+        "该设备在所选时间段已有预约": "该设备在所选时间段已有预约，请选择其他时间。",
+        "not approved": "账号尚未通过管理员审批。",
+        "not authorized": "没有执行该操作的权限。",
+        "JWT": "登录状态已过期，请重新登录。",
+    }
+    for needle, friendly in replacements.items():
+        if needle.lower() in message.lower():
+            return friendly
+    return message
