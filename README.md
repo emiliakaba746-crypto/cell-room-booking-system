@@ -27,7 +27,7 @@ Streamlit Community Cloud 会休眠。自托管在腾讯云轻量服务器后，
 
 1. 新建一个专用 Supabase 项目，例如 `cell-room-booking`。
 2. 打开 Supabase Dashboard 的 SQL Editor。
-3. 复制 `supabase/migrations/001_schema.sql` 的全部内容并运行。
+3. 按文件名顺序依次运行 `supabase/migrations/` 下的全部 SQL 文件。
 4. 打开 `Authentication > Providers > Email`，按需要决定是否启用邮箱确认。`Authentication > URL Configuration` 中的 Site URL 必须设置为服务器公网地址，例如 `http://124.221.229.101:8507`，并加入 Redirect URLs，否则邮箱确认链接可能无法跳转。
 5. 打开 `Project Settings > API`，记录：
    - Project URL
@@ -130,6 +130,7 @@ http://服务器公网IPv4:8507
 - 生产环境应使用 HTTPS。
 - 建议定期备份 Supabase 数据库。
 - 成员停用后保留历史预约记录，不直接删除账号。
+
 
 
 
