@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import html
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
@@ -22,9 +24,21 @@ from booking import (
 )
 
 
+COLLEGE_NAME = "中山大学农业与生物技术学院"
+SYSTEM_NAME = "细胞间预约系统"
+APP_FULL_NAME = f"{COLLEGE_NAME}{SYSTEM_NAME}"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+FULL_LOGO_PATH = ASSETS_DIR / "college-logo-green.png"
+EMBLEM_PATH = ASSETS_DIR / "college-emblem-green.png"
+
+
+def image_data_uri(path: Path) -> str:
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
 st.set_page_config(
-    page_title="细胞间预约系统",
-    page_icon="🧫",
+    page_title=APP_FULL_NAME,
+    page_icon=str(EMBLEM_PATH),
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -42,6 +56,11 @@ CUSTOM_CSS = """
 }
 .hero h1 { margin: 0 0 4px 0; color: var(--ink); font-size: 1.75rem; }
 .hero p { margin: 0; color: #475569; }
+.brand-row { display:flex; align-items:center; gap:22px; }
+.brand-logo { width:min(360px, 42vw); height:auto; object-fit:contain; }
+.brand-copy { min-width:0; }
+.brand-college { color:#166534; font-size:.92rem; font-weight:700; letter-spacing:.04em; margin-bottom:3px; }
+@media (max-width: 780px) { .brand-row { align-items:flex-start; gap:12px; } .brand-logo { width:160px; } .hero h1 { font-size:1.25rem; } }
 .metric-card {
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -135,8 +154,13 @@ def action_button(label: str, callback: Callable[[], Any], *, key: str, success:
 
 
 def render_header(title: str, subtitle: str) -> None:
+    logo_uri = image_data_uri(FULL_LOGO_PATH)
     st.markdown(
-        f'<div class="hero"><h1>{html.escape(title)}</h1><p>{html.escape(subtitle)}</p></div>',
+        f'<div class="hero"><div class="brand-row">'
+        f'<img class="brand-logo" src="{logo_uri}" alt="{html.escape(COLLEGE_NAME)}">'
+        f'<div class="brand-copy"><div class="brand-college">{html.escape(COLLEGE_NAME)}</div>'
+        f'<h1>{html.escape(title)}</h1><p>{html.escape(subtitle)}</p></div>'
+        f'</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -144,7 +168,7 @@ def render_header(title: str, subtitle: str) -> None:
 def render_login() -> None:
     settings = load_settings()
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    render_header(settings.app_name, "两台超净工作台、四台培养箱，全天 00:00–24:00 在线预约与使用记录。")
+    render_header(SYSTEM_NAME, "两台超净工作台、四台培养箱，全天 00:00–24:00 在线预约与使用记录。")
     left, middle, right = st.columns([1, 1.35, 1])
     with middle:
         tab_login, tab_register = st.tabs(["账号登录", "注册新账号"])
@@ -225,7 +249,9 @@ def render_access_state(user) -> bool:
 
 def render_sidebar(user) -> str:
     with st.sidebar:
-        st.markdown("## 🧫 细胞间预约")
+        st.image(str(EMBLEM_PATH), width=96)
+        st.markdown("### 细胞间预约系统")
+        st.caption(COLLEGE_NAME)
         st.caption(f"登录：{user.display_name}")
         role = "主账号 / 管理员" if user.is_admin else "已授权成员"
         st.markdown(f"**{role}**")
@@ -815,6 +841,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
 
 
 
