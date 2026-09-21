@@ -330,10 +330,18 @@ def render_timeline(equipment: list[dict[str, Any]], reservations: list[dict[str
                 end_minutes = end_local.hour * 60 + end_local.minute
             top = start_minutes / DAY_MINUTES * 100
             height = max(1.7, (end_minutes - start_minutes) / DAY_MINUTES * 100)
-            owner = "我的预约" if row.get("user_id") == user.id else str(row.get("booked_by_name") or "其他成员")
+            owner = str(row.get("booked_by_name") or "其他成员")
+            if row.get("user_id") == user.id:
+                owner = f"{owner}（我）"
+            phone = str(row.get("booked_by_phone") or "未填写")
+            student_staff_id = str(row.get("booked_by_student_staff_id") or "未填写")
+            advisor = str(row.get("booked_by_advisor") or "未填写")
             purpose = str(row.get("purpose") or "").strip()
-            detail = f"{html.escape(owner)} · {html.escape(purpose[:16])}" if purpose else html.escape(owner)
-            tooltip = f'{owner}｜{format_local(row["start_at"], "%H:%M")}–{format_local(row["end_at"], "%H:%M")}｜{purpose}'
+            detail = f"{html.escape(owner)} · {html.escape(phone)}"
+            tooltip = (
+                f'{owner}｜{format_local(row["start_at"], "%H:%M")}–{format_local(row["end_at"], "%H:%M")}'
+                f'｜手机：{phone}｜工号/学号：{student_staff_id}｜导师：{advisor}｜用途：{purpose}'
+            )
             html_parts.append(
                 f'<div class="booking-block {html.escape(status)}" title="{html.escape(tooltip)}" '
                 f'style="top:{top:.4f}%;height:{height:.4f}%">'
@@ -367,6 +375,27 @@ def render_calendar(user) -> None:
     st.markdown("#### 24 小时设备时间轴")
     st.caption("绿色为使用中，蓝色为已预约，灰色为已完成；点击色块可查看预约人、时间和用途。")
     render_timeline(equipment, reservations, user)
+
+    st.markdown("#### 当日预约明细")
+    detail_rows = []
+    for row in reservations:
+        detail_rows.append(
+            {
+                "开始": format_local(row["start_at"], "%H:%M"),
+                "结束": format_local(row["end_at"], "%H:%M"),
+                "设备": (row.get("equipment") or {}).get("name", ""),
+                "预约人": row.get("booked_by_name", ""),
+                "手机号": row.get("booked_by_phone", ""),
+                "工号 / 学号": row.get("booked_by_student_staff_id", ""),
+                "导师 / 负责老师": row.get("booked_by_advisor", ""),
+                "用途 / 细胞类型": row.get("purpose", ""),
+                "状态": STATUS_LABELS.get(row.get("status"), row.get("status", "")),
+            }
+        )
+    if detail_rows:
+        st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("当天暂无预约。")
 
     st.divider()
     st.markdown("#### 新建预约")
@@ -952,6 +981,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
