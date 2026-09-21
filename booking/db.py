@@ -50,7 +50,15 @@ class BookingService:
             raise RuntimeError("登录失败，请检查邮箱和密码。")
         return self._load_user(response.user.id, response.user.email or email)
 
-    def sign_up(self, email: str, password: str, display_name: str, phone: str = "") -> SessionUser | None:
+    def sign_up(
+        self,
+        email: str,
+        password: str,
+        display_name: str,
+        phone: str,
+        student_staff_id: str,
+        advisor: str,
+    ) -> SessionUser | None:
         response = self.client.auth.sign_up(
             {
                 "email": email,
@@ -59,6 +67,8 @@ class BookingService:
                     "data": {
                         "display_name": display_name,
                         "phone": phone,
+                        "student_staff_id": student_staff_id,
+                        "advisor": advisor,
                     }
                 },
             }
@@ -154,10 +164,21 @@ class BookingService:
     def set_profile_role(self, user_id: str, role: str) -> None:
         self.client.table("profiles").update({"role": role}).eq("id", user_id).execute()
 
-    def update_my_profile(self, display_name: str, phone: str) -> None:
+    def update_my_profile(
+        self,
+        display_name: str,
+        phone: str,
+        student_staff_id: str,
+        advisor: str,
+    ) -> None:
         self.client.rpc(
             "update_my_profile",
-            {"p_display_name": display_name, "p_phone": phone},
+            {
+                "p_display_name": display_name,
+                "p_phone": phone,
+                "p_student_staff_id": student_staff_id,
+                "p_advisor": advisor,
+            },
         ).execute()
 
     def promote_initial_admin(self) -> bool:
@@ -216,3 +237,4 @@ def first_error_message(error: Exception) -> str:
         if needle.lower() in message.lower():
             return friendly
     return message
+

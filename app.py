@@ -159,9 +159,6 @@ def render_login() -> None:
                 else:
                     try:
                         user = service().sign_in(email.strip().lower(), password)
-                        if not user.is_admin and settings.initial_admin_email == user.email.lower():
-                            service().promote_initial_admin()
-                            user = service().current_user() or user
                         st.session_state.session_user = user
                         st.rerun()
                     except Exception as error:
@@ -171,7 +168,9 @@ def render_login() -> None:
             with st.form("register_form", border=True):
                 display_name = st.text_input("姓名", placeholder="例如：张三")
                 email = st.text_input("邮箱", key="register_email", placeholder="name@example.com")
-                phone = st.text_input("手机 / 工号（选填）")
+                phone = st.text_input("手机号（必填）", placeholder="请输入手机号")
+                student_staff_id = st.text_input("工号 / 学号（两者填其一，必填）", placeholder="请输入工号或学号")
+                advisor = st.text_input("导师 / 负责老师（必填）", placeholder="请输入导师或负责老师姓名")
                 password = st.text_input("设置密码（至少 8 位）", type="password")
                 confirm = st.text_input("确认密码", type="password")
                 submitted = st.form_submit_button("提交注册", type="primary", use_container_width=True)
@@ -182,9 +181,22 @@ def render_login() -> None:
                     st.warning("两次输入的密码不一致。")
                 elif not display_name.strip() or not email.strip():
                     st.warning("请填写姓名和邮箱。")
+                elif not phone.strip():
+                    st.warning("请填写手机号。")
+                elif not student_staff_id.strip():
+                    st.warning("请填写工号或学号。")
+                elif not advisor.strip():
+                    st.warning("请填写导师或负责老师。")
                 else:
                     try:
-                        user = service().sign_up(email.strip().lower(), password, display_name.strip(), phone.strip())
+                        user = service().sign_up(
+                            email.strip().lower(),
+                            password,
+                            display_name.strip(),
+                            phone.strip(),
+                            student_staff_id.strip(),
+                            advisor.strip(),
+                        )
                         if user is None:
                             st.error("注册失败，请稍后重试。")
                         else:
@@ -488,11 +500,18 @@ def render_profile(user) -> None:
     render_header("个人资料", "维护姓名和联系方式，方便管理员进行培训与使用管理。")
     with st.form("profile_form", border=True):
         display_name = st.text_input("姓名", value=user.display_name)
-        phone = st.text_input("手机 / 工号", value=str(user.profile.get("phone") or ""))
+        phone = st.text_input("手机号", value=str(user.profile.get("phone") or ""))
+        student_staff_id = st.text_input("工号 / 学号", value=str(user.profile.get("student_staff_id") or ""))
+        advisor = st.text_input("导师 / 负责老师", value=str(user.profile.get("advisor") or ""))
         submitted = st.form_submit_button("保存资料", type="primary")
     if submitted:
         try:
-            service().update_my_profile(display_name.strip(), phone.strip())
+            service().update_my_profile(
+                display_name.strip(),
+                phone.strip(),
+                student_staff_id.strip(),
+                advisor.strip(),
+            )
             st.session_state.session_user = service().current_user()
             st.success("资料已保存。")
             st.rerun()
@@ -517,7 +536,11 @@ def render_members_admin(user) -> None:
                 cols = st.columns([3, 1, 1])
                 with cols[0]:
                     st.markdown(f'**{row.get("display_name") or "未填写姓名"}**')
-                    st.caption(f'{row.get("email", "")} · {row.get("phone") or "未填写联系方式"}')
+                    st.caption(
+                        f'{row.get("email", "")} · 手机：{row.get("phone") or "未填写"} · '
+                        f'工号/学号：{row.get("student_staff_id") or "未填写"} · '
+                        f'导师：{row.get("advisor") or "未填写"}'
+                    )
                 with cols[1]:
                     action_button(
                         "通过授权",
@@ -540,12 +563,14 @@ def render_members_admin(user) -> None:
     st.markdown("#### 全部成员")
     frame = pd.DataFrame(profiles)
     if not frame.empty:
-        show_columns = [column for column in ["display_name", "email", "phone", "role", "status", "created_at"] if column in frame.columns]
+        show_columns = [column for column in ["display_name", "email", "phone", "student_staff_id", "advisor", "role", "status", "created_at"] if column in frame.columns]
         frame = frame[show_columns].rename(
             columns={
                 "display_name": "姓名",
                 "email": "邮箱",
-                "phone": "手机/工号",
+                "phone": "手机号",
+                "student_staff_id": "工号/学号",
+                "advisor": "导师/负责老师",
                 "role": "角色",
                 "status": "状态",
                 "created_at": "注册时间",
@@ -790,6 +815,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

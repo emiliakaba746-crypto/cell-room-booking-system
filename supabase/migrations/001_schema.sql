@@ -118,17 +118,21 @@ security definer
 set search_path = public, auth
 as $$
 begin
-  insert into public.profiles (id, email, display_name, phone)
+  insert into public.profiles (id, email, display_name, phone, student_staff_id, advisor)
   values (
     new.id,
     coalesce(new.email, ''),
     coalesce(new.raw_user_meta_data ->> 'display_name', ''),
-    coalesce(new.raw_user_meta_data ->> 'phone', '')
+    coalesce(new.raw_user_meta_data ->> 'phone', ''),
+    coalesce(new.raw_user_meta_data ->> 'student_staff_id', ''),
+    coalesce(new.raw_user_meta_data ->> 'advisor', '')
   )
   on conflict (id) do update set
     email = excluded.email,
     display_name = case when public.profiles.display_name = '' then excluded.display_name else public.profiles.display_name end,
-    phone = case when public.profiles.phone = '' then excluded.phone else public.profiles.phone end;
+    phone = case when public.profiles.phone = '' then excluded.phone else public.profiles.phone end,
+    student_staff_id = case when public.profiles.student_staff_id = '' then excluded.student_staff_id else public.profiles.student_staff_id end,
+    advisor = case when public.profiles.advisor = '' then excluded.advisor else public.profiles.advisor end;
   return new;
 end;
 $$;
@@ -138,12 +142,14 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
 
-insert into public.profiles (id, email, display_name, phone)
+insert into public.profiles (id, email, display_name, phone, student_staff_id, advisor)
 select
   u.id,
   coalesce(u.email, ''),
   coalesce(u.raw_user_meta_data ->> 'display_name', ''),
-  coalesce(u.raw_user_meta_data ->> 'phone', '')
+  coalesce(u.raw_user_meta_data ->> 'phone', ''),
+  coalesce(u.raw_user_meta_data ->> 'student_staff_id', ''),
+  coalesce(u.raw_user_meta_data ->> 'advisor', '')
 from auth.users u
 on conflict (id) do nothing;
 
@@ -223,7 +229,12 @@ begin
 end;
 $$;
 
-create or replace function public.update_my_profile(p_display_name text, p_phone text)
+create or replace function public.update_my_profile(
+  p_display_name text,
+  p_phone text,
+  p_student_staff_id text,
+  p_advisor text
+)
 returns void
 language plpgsql
 security definer
@@ -234,7 +245,10 @@ begin
     raise exception 'not authenticated';
   end if;
   update public.profiles
-  set display_name = coalesce(p_display_name, ''), phone = coalesce(p_phone, '')
+  set display_name = coalesce(p_display_name, ''),
+      phone = coalesce(p_phone, ''),
+      student_staff_id = coalesce(p_student_staff_id, ''),
+      advisor = coalesce(p_advisor, '')
   where id = auth.uid();
 end;
 $$;
@@ -508,7 +522,7 @@ grant update on public.profiles to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 
 grant execute on function public.promote_initial_admin() to authenticated;
-grant execute on function public.update_my_profile(text, text) to authenticated;
+grant execute on function public.update_my_profile(text, text, text, text) to authenticated;
 grant execute on function public.create_booking(bigint, timestamptz, timestamptz, text) to authenticated;
 grant execute on function public.cancel_booking(uuid) to authenticated;
 grant execute on function public.start_usage(uuid) to authenticated;
@@ -516,4 +530,5 @@ grant execute on function public.complete_usage(uuid, text) to authenticated;
 grant execute on function public.mark_no_show(uuid) to authenticated;
 
 alter default privileges in schema public grant select on tables to authenticated;
+
 
