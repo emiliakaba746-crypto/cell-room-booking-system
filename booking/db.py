@@ -149,8 +149,31 @@ class BookingService:
         ).execute()
         return response.data or {}
 
+    def update_booking(
+        self,
+        *,
+        booking_id: str,
+        equipment_id: int,
+        start_at: datetime,
+        end_at: datetime,
+        purpose: str,
+    ) -> None:
+        self.client.rpc(
+            "update_booking",
+            {
+                "p_booking_id": booking_id,
+                "p_equipment_id": equipment_id,
+                "p_start_at": start_at.isoformat(),
+                "p_end_at": end_at.isoformat(),
+                "p_purpose": purpose,
+            },
+        ).execute()
+
     def cancel_booking(self, booking_id: str) -> None:
         self.client.rpc("cancel_booking", {"p_booking_id": booking_id}).execute()
+
+    def delete_booking(self, booking_id: str) -> None:
+        self.client.rpc("delete_booking", {"p_booking_id": booking_id}).execute()
 
     def start_usage(self, booking_id: str) -> None:
         self.client.rpc("start_usage", {"p_booking_id": booking_id}).execute()
@@ -237,4 +260,5 @@ def first_error_message(error: Exception) -> str:
         if needle.lower() in message.lower():
             return friendly
     return message
+
 

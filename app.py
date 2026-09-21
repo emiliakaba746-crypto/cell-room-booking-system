@@ -256,7 +256,7 @@ def render_sidebar(user) -> str:
         role = "主账号 / 管理员" if user.is_admin else "已授权成员"
         st.markdown(f"**{role}**")
         st.divider()
-        pages = ["预约日历", "我的预约", "使用记录", "个人资料"]
+        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "个人资料"]
         if user.is_admin:
             pages += ["成员授权", "设备管理", "预约管理", "使用统计"]
         page = st.radio("功能导航", pages, label_visibility="collapsed")
@@ -478,6 +478,93 @@ def render_my_bookings(user) -> None:
     frame = reservation_dataframe(rows, user)
     st.dataframe(frame, use_container_width=True, hide_index=True)
 
+
+def render_modify_booking(user) -> None:
+    render_header("修改预约", "预约开始前可以自行修改设备和时间，修改后立即生效，无需管理员审批。")
+    try:
+        rows = service().list_reservations(user_id=user.id, all_users=False, limit=500)
+        equipment = service().list_equipment()
+    except Exception as error:
+        st.error(first_error_message(error))
+        return
+
+    now = datetime.now(SHANGHAI)
+    eligible = [
+        row
+        for row in rows
+        if row.get("status") == "booked"
+        and parse_timestamp(row["start_at"]) > now
+    ]
+    if not eligible:
+        st.info("当前没有可修改的预约。只有尚未开始且状态为“已预约”的记录可以修改。")
+        return
+
+    options = {}
+    for row in eligible:
+        equipment_name = (row.get("equipment") or {}).get("name", "设备")
+        options[str(row["id"])] = (
+            f'{format_local(row["start_at"], "%Y-%m-%d %H:%M")}–'
+            f'{format_local(row["end_at"], "%H:%M")} · {equipment_name}'
+        )
+    booking_id = st.selectbox("选择要修改的预约", options=list(options), format_func=lambda value: options[value])
+    selected = next(row for row in eligible if str(row["id"]) == booking_id)
+    current_start = parse_timestamp(selected["start_at"])
+    current_end = parse_timestamp(selected["end_at"])
+
+    if not equipment:
+        st.warning("暂无可用设备。")
+        return
+
+    equipment_options = {int(item["id"]): f'{item["name"]} · {item.get("location") or ""}' for item in equipment}
+    equipment_ids = list(equipment_options)
+    current_equipment_id = int(selected["equipment_id"])
+    equipment_index = equipment_ids.index(current_equipment_id) if current_equipment_id in equipment_ids else 0
+
+    start_options = [format_minutes(value) for value in range(0, DAY_MINUTES, SLOT_MINUTES)]
+    end_options = [format_minutes(value) for value in range(SLOT_MINUTES, DAY_MINUTES + 1, SLOT_MINUTES)]
+    current_start_minutes = current_start.hour * 60 + current_start.minute
+    if current_end.date() > current_start.date():
+        current_end_minutes = DAY_MINUTES
+    else:
+        current_end_minutes = current_end.hour * 60 + current_end.minute
+
+    with st.form("modify_booking_form", border=True):
+        equipment_id = st.selectbox(
+            "新设备",
+            options=equipment_ids,
+            index=equipment_index,
+            format_func=lambda value: equipment_options[value],
+        )
+        selected_day = st.date_input("新日期", value=current_start.date(), format="YYYY-MM-DD")
+        start_col, end_col = st.columns(2)
+        with start_col:
+            start_index = start_options.index(format_minutes(current_start_minutes)) if format_minutes(current_start_minutes) in start_options else 18
+            start_label = st.selectbox("新开始时间", start_options, index=start_index)
+        with end_col:
+            end_index = end_options.index(format_minutes(current_end_minutes)) if format_minutes(current_end_minutes) in end_options else min(start_index + 2, len(end_options) - 1)
+            end_label = st.selectbox("新结束时间", end_options, index=end_index)
+        purpose = st.text_area("用途 / 细胞类型", value=str(selected.get("purpose") or ""), max_chars=300)
+        st.caption("系统会在保存时重新检查设备冲突；如果新时段已被占用，将不会修改。")
+        submitted = st.form_submit_button("保存修改（无需审批）", type="primary", use_container_width=True)
+
+    if submitted:
+        try:
+            start_at, end_at = validate_booking_range(
+                selected_day,
+                minute_offset(start_label),
+                minute_offset(end_label),
+            )
+            service().update_booking(
+                booking_id=booking_id,
+                equipment_id=equipment_id,
+                start_at=start_at,
+                end_at=end_at,
+                purpose=purpose.strip(),
+            )
+            st.success("预约已修改并立即生效。")
+            st.rerun()
+        except Exception as error:
+            st.error(first_error_message(error))
 
 def render_usage_history(user) -> None:
     render_header("使用记录", "系统同时记录预约时长与实际开始/结束时长，便于后续授权和管理。")
@@ -713,17 +800,21 @@ def render_reservations_admin(user) -> None:
         return
     frame = reservation_dataframe(rows, user)
     st.dataframe(frame, use_container_width=True, hide_index=True)
-    active = [row for row in rows if row.get("status") in {"booked", "in_use"}]
-    if not active:
-        st.info("当天没有可管理的预约。")
+    if not rows:
+        st.info("当天没有预约记录。")
         return
     options = {
-        str(row["id"]): f'{format_local(row["start_at"], "%H:%M")}–{format_local(row["end_at"], "%H:%M")} · '
-        f'{(row.get("equipment") or {}).get("name", "")} · {row.get("booked_by_name", "")}'
-        for row in active
+        str(row["id"]): (
+            f'{format_local(row["start_at"], "%H:%M")}–{format_local(row["end_at"], "%H:%M")} · '
+            f'{(row.get("equipment") or {}).get("name", "")} · {row.get("booked_by_name", "")} · '
+            f'{STATUS_LABELS.get(row.get("status"), row.get("status", ""))}'
+        )
+        for row in rows
     }
     booking_id = st.selectbox("选择预约", options=list(options), format_func=lambda value: options[value])
-    col_cancel, col_no_show, col_complete = st.columns(3)
+    selected = next(row for row in rows if str(row["id"]) == booking_id)
+
+    col_cancel, col_no_show, col_complete, col_delete = st.columns(4)
     with col_cancel:
         action_button(
             "取消预约",
@@ -745,6 +836,24 @@ def render_reservations_admin(user) -> None:
             key=f"admin_complete_{booking_id}",
             success="已结束使用。",
         )
+    with col_delete:
+        confirm_delete = st.checkbox("确认永久删除", key=f"confirm_delete_{booking_id}")
+        if st.button(
+            "删除记录",
+            key=f"admin_delete_{booking_id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not confirm_delete:
+                st.warning("请先勾选“确认永久删除”。")
+            else:
+                try:
+                    service().delete_booking(booking_id)
+                    st.success("预约记录已永久删除。")
+                    st.rerun()
+                except Exception as error:
+                    st.error(first_error_message(error))
+    st.caption("删除操作不可恢复；如需保留历史，请优先使用取消预约或标记未到。")
 
 
 def render_usage_admin() -> None:
@@ -825,6 +934,8 @@ def main() -> None:
         render_calendar(user)
     elif page == "我的预约":
         render_my_bookings(user)
+    elif page == "修改预约":
+        render_modify_booking(user)
     elif page == "使用记录":
         render_usage_history(user)
     elif page == "个人资料":
@@ -841,6 +952,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 
