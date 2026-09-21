@@ -340,7 +340,7 @@ def render_timeline(equipment: list[dict[str, Any]], reservations: list[dict[str
             detail = f"{html.escape(owner)} · {html.escape(phone)}"
             tooltip = (
                 f'{owner}｜{format_local(row["start_at"], "%H:%M")}–{format_local(row["end_at"], "%H:%M")}'
-                f'｜手机：{phone}｜工号/学号：{student_staff_id}｜导师：{advisor}｜用途：{purpose}'
+                f'｜手机：{phone}｜工号/学号：{student_staff_id}｜导师：{advisor}｜使用目的：{purpose}｜细胞类型：{str(row.get("cell_type") or "未填写")}'
             )
             html_parts.append(
                 f'<div class="booking-block {html.escape(status)}" title="{html.escape(tooltip)}" '
@@ -388,7 +388,8 @@ def render_calendar(user) -> None:
                 "手机号": row.get("booked_by_phone", ""),
                 "工号 / 学号": row.get("booked_by_student_staff_id", ""),
                 "导师 / 负责老师": row.get("booked_by_advisor", ""),
-                "用途 / 细胞类型": row.get("purpose", ""),
+                "预约使用目的": row.get("purpose", ""),
+                "培养细胞类型": row.get("cell_type", ""),
                 "状态": STATUS_LABELS.get(row.get("status"), row.get("status", "")),
             }
         )
@@ -399,6 +400,14 @@ def render_calendar(user) -> None:
 
     st.divider()
     st.markdown("#### 新建预约")
+    st.warning(
+        "**使用前温馨提示**\n"
+        "1. 使用前先做好台面、培养箱内壁及手部消毒，检查设备状态和耗材。\n"
+        "2. 全程严格执行无菌操作，穿戴实验服、口罩和手套。\n"
+        "3. 不得将污染、破损或来源不明的培养物放入工作台或培养箱。\n"
+        "4. 使用后及时清理台面、内腔和废弃物，发现污染立即停用并报告管理员。\n"
+        "5. 按时开始和结束使用，离开前关闭设备、气源和照明，带走个人物品。"
+    )
     with st.form("booking_form", border=True):
         resource_names = {int(item["id"]): f'{item["name"]} · {item.get("location") or ""}' for item in equipment}
         equipment_id = st.selectbox(
@@ -414,25 +423,45 @@ def render_calendar(user) -> None:
         with end_col:
             default_end_index = min(starts.index(start_label) + 2, len(ends) - 1)
             end_label = st.selectbox("结束时间", ends, index=default_end_index)
-        purpose = st.text_area("用途 / 细胞类型（建议填写）", max_chars=300, placeholder="例如：HEK293 传代、原代细胞接种")
-        submitted = st.form_submit_button("提交预约", type="primary", use_container_width=True)
+        purpose = st.text_area(
+            "预约使用目的（必填）",
+            max_chars=300,
+            placeholder="例如：细胞传代、换液、接种、取样、显微镜观察等",
+        )
+        cell_type = st.text_input(
+            "培养的细胞类型（必填）",
+            placeholder="例如：HEK293、A549、原代神经细胞等；如不培养细胞请填写“无”",
+        )
+        confirmed = st.checkbox("我已阅读并确认遵守以上使用事项")
+        submitted = st.form_submit_button(
+            "提交预约",
+            type="primary",
+            use_container_width=True,
+            disabled=not confirmed,
+        )
     if submitted:
-        try:
-            start_at, end_at = validate_booking_range(
-                selected_day,
-                minute_offset(start_label),
-                minute_offset(end_label),
-            )
-            service().create_booking(
-                equipment_id=equipment_id,
-                start_at=start_at,
-                end_at=end_at,
-                purpose=purpose.strip(),
-            )
-            st.success("预约成功。")
-            st.rerun()
-        except Exception as error:
-            st.error(first_error_message(error))
+        if not purpose.strip():
+            st.error("请填写预约使用目的。")
+        elif not cell_type.strip():
+            st.error("请填写培养的细胞类型；如不培养细胞请填写“无”。")
+        else:
+            try:
+                start_at, end_at = validate_booking_range(
+                    selected_day,
+                    minute_offset(start_label),
+                    minute_offset(end_label),
+                )
+                service().create_booking(
+                    equipment_id=equipment_id,
+                    start_at=start_at,
+                    end_at=end_at,
+                    purpose=purpose.strip(),
+                    cell_type=cell_type.strip(),
+                )
+                st.success("预约成功。")
+                st.rerun()
+            except Exception as error:
+                st.error(first_error_message(error))
 
 
 def reservation_dataframe(rows: list[dict[str, Any]], user) -> pd.DataFrame:
@@ -448,7 +477,8 @@ def reservation_dataframe(rows: list[dict[str, Any]], user) -> pd.DataFrame:
                 "时长(分钟)": int(row.get("reserved_minutes") or 0),
                 "预约人": "我" if row.get("user_id") == user.id else row.get("booked_by_name", ""),
                 "状态": STATUS_LABELS.get(row.get("status"), row.get("status", "")),
-                "用途": row.get("purpose", ""),
+                "预约目的": row.get("purpose", ""),
+                "培养细胞类型": row.get("cell_type", ""),
             }
         )
     return pd.DataFrame(data)
@@ -478,7 +508,9 @@ def render_my_bookings(user) -> None:
                 st.write(f'{format_local(row["start_at"], "%Y-%m-%d %H:%M")} – {format_local(row["end_at"], "%H:%M")}')
             with middle:
                 st.markdown(f'**{STATUS_LABELS.get(row["status"], row["status"])}**')
-                st.caption(row.get("purpose") or "未填写用途")
+                st.caption(
+                    f"目的：{row.get('purpose') or '未填写'}｜细胞类型：{row.get('cell_type') or '未填写'}"
+                )
             with right:
                 if row["status"] == "booked":
                     action_button(
@@ -572,28 +604,43 @@ def render_modify_booking(user) -> None:
         with end_col:
             end_index = end_options.index(format_minutes(current_end_minutes)) if format_minutes(current_end_minutes) in end_options else min(start_index + 2, len(end_options) - 1)
             end_label = st.selectbox("新结束时间", end_options, index=end_index)
-        purpose = st.text_area("用途 / 细胞类型", value=str(selected.get("purpose") or ""), max_chars=300)
+        purpose = st.text_area(
+            "预约使用目的（必填）",
+            value=str(selected.get("purpose") or ""),
+            max_chars=300,
+        )
+        cell_type = st.text_input(
+            "培养的细胞类型（必填）",
+            value=str(selected.get("cell_type") or ""),
+            placeholder="如不培养细胞请填写“无”",
+        )
         st.caption("系统会在保存时重新检查设备冲突；如果新时段已被占用，将不会修改。")
         submitted = st.form_submit_button("保存修改（无需审批）", type="primary", use_container_width=True)
 
     if submitted:
-        try:
-            start_at, end_at = validate_booking_range(
-                selected_day,
-                minute_offset(start_label),
-                minute_offset(end_label),
-            )
-            service().update_booking(
-                booking_id=booking_id,
-                equipment_id=equipment_id,
-                start_at=start_at,
-                end_at=end_at,
-                purpose=purpose.strip(),
-            )
-            st.success("预约已修改并立即生效。")
-            st.rerun()
-        except Exception as error:
-            st.error(first_error_message(error))
+        if not purpose.strip():
+            st.error("请填写预约使用目的。")
+        elif not cell_type.strip():
+            st.error("请填写培养的细胞类型；如不培养细胞请填写“无”。")
+        else:
+            try:
+                start_at, end_at = validate_booking_range(
+                    selected_day,
+                    minute_offset(start_label),
+                    minute_offset(end_label),
+                )
+                service().update_booking(
+                    booking_id=booking_id,
+                    equipment_id=equipment_id,
+                    start_at=start_at,
+                    end_at=end_at,
+                    purpose=purpose.strip(),
+                    cell_type=cell_type.strip(),
+                )
+                st.success("预约已修改并立即生效。")
+                st.rerun()
+            except Exception as error:
+                st.error(first_error_message(error))
 
 def render_usage_history(user) -> None:
     render_header("使用记录", "系统同时记录预约时长与实际开始/结束时长，便于后续授权和管理。")
@@ -619,6 +666,7 @@ def render_usage_history(user) -> None:
         "reserved_minutes",
         "actual_minutes",
         "purpose",
+        "cell_type",
     ]
     frame = frame[[column for column in preferred if column in frame.columns]]
     frame = frame.rename(
@@ -630,7 +678,8 @@ def render_usage_history(user) -> None:
             "status": "状态",
             "reserved_minutes": "预约分钟",
             "actual_minutes": "实际分钟",
-            "purpose": "用途",
+            "purpose": "预约目的",
+            "cell_type": "培养细胞类型",
         }
     )
     if "状态" in frame.columns:
@@ -914,6 +963,7 @@ def render_usage_admin() -> None:
         "reserved_minutes",
         "actual_minutes",
         "purpose",
+        "cell_type",
         "notes",
     ]
     frame = frame[[column for column in columns if column in frame.columns]]
@@ -927,7 +977,8 @@ def render_usage_admin() -> None:
             "status": "状态",
             "reserved_minutes": "预约分钟",
             "actual_minutes": "实际分钟",
-            "purpose": "用途",
+            "purpose": "预约目的",
+            "cell_type": "培养细胞类型",
             "notes": "备注",
         }
     )
@@ -981,6 +1032,17 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
 
 
 

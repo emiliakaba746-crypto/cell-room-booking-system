@@ -137,6 +137,7 @@ class BookingService:
         start_at: datetime,
         end_at: datetime,
         purpose: str,
+        cell_type: str,
     ) -> dict[str, Any]:
         response = self.client.rpc(
             "create_booking",
@@ -145,6 +146,7 @@ class BookingService:
                 "p_start_at": start_at.isoformat(),
                 "p_end_at": end_at.isoformat(),
                 "p_purpose": purpose,
+                "p_cell_type": cell_type,
             },
         ).execute()
         return response.data or {}
@@ -157,6 +159,7 @@ class BookingService:
         start_at: datetime,
         end_at: datetime,
         purpose: str,
+        cell_type: str,
     ) -> None:
         self.client.rpc(
             "update_booking",
@@ -166,6 +169,7 @@ class BookingService:
                 "p_start_at": start_at.isoformat(),
                 "p_end_at": end_at.isoformat(),
                 "p_purpose": purpose,
+                "p_cell_type": cell_type,
             },
         ).execute()
 
@@ -260,5 +264,6 @@ def first_error_message(error: Exception) -> str:
         if needle.lower() in message.lower():
             return friendly
     return message
+
 
 
