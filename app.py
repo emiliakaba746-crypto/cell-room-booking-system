@@ -303,45 +303,71 @@ def render_safety_banner() -> None:
     except Exception:
         return
 
-    if safety_state == "safe":
-        return
-
     try:
-        current = service().latest_disinfection_session()
+        current = service().latest_disinfection_session(room_only=True)
     except Exception:
         current = None
 
-    if safety_state == "disinfecting":
-        st.error(
-            "⚠️ 当前细胞间正在进行臭氧/紫外消毒，严禁进入。"
-            + (
-                f" 计划结束时间：{format_local(current['expected_end_at'], '%Y-%m-%d %H:%M')}。"
-                if current and current.get("expected_end_at")
-                else ""
+    if safety_state != "safe":
+        if safety_state == "disinfecting":
+            st.error(
+                "⚠️ 当前细胞间空间正在进行臭氧/紫外消毒，严禁进入。"
+                + (
+                    f" 计划结束时间：{format_local(current['expected_end_at'], '%Y-%m-%d %H:%M')}。"
+                    if current and current.get("expected_end_at")
+                    else ""
+                )
             )
-        )
-    elif safety_state == "awaiting_ventilation":
-        st.error(
-            "⚠️ 上一位同学开启了臭氧/紫外消毒，但尚未登记结束和通风。"
-            "在完成通风并达到安全时间前，请勿进入细胞间。"
-        )
-    elif safety_state == "venting":
-        remaining = ""
-        if current and current.get("safe_at"):
-            safe_at = parse_timestamp(current["safe_at"])
-            minutes = max(0, int((safe_at - datetime.now(SHANGHAI)).total_seconds() / 60) + 1)
-            remaining = f" 预计还需通风约 {minutes} 分钟。"
-        st.warning(
-            "⚠️ 臭氧/紫外消毒已结束，目前处于通风阶段，禁止进入。"
-            + remaining
-            + " 请等待安全时间到达后，由在场人员确认通风完成。"
-        )
+        elif safety_state == "awaiting_ventilation":
+            st.error(
+                "⚠️ 上一位同学开启了细胞间空间臭氧/紫外消毒，但尚未登记结束和通风。"
+                "在完成通风并达到安全时间前，请勿进入细胞间。"
+            )
+        elif safety_state == "venting":
+            remaining = ""
+            if current and current.get("safe_at"):
+                safe_at = parse_timestamp(current["safe_at"])
+                minutes = max(0, int((safe_at - datetime.now(SHANGHAI)).total_seconds() / 60) + 1)
+                remaining = f" 预计还需通风约 {minutes} 分钟。"
+            st.warning(
+                "⚠️ 细胞间空间消毒已结束，目前处于通风阶段，禁止进入。"
+                + remaining
+                + " 请等待安全时间到达后，由在场人员确认通风完成。"
+            )
+
+    try:
+        open_sessions = service().list_open_disinfection_sessions()
+    except Exception:
+        open_sessions = []
+
+    for session in open_sessions:
+        equipment_id = session.get("equipment_id")
+        if equipment_id is None:
+            continue
+        try:
+            bench_state = service().equipment_safety_state(int(equipment_id))
+        except Exception:
+            continue
+        if bench_state == "safe":
+            continue
+        resource_name = session.get("resource_name") or "超净工作台"
+        if bench_state == "disinfecting":
+            st.error(f"⚠️ {resource_name} 正在进行紫外消毒，禁止使用。")
+        elif bench_state == "awaiting_ventilation":
+            st.error(f"⚠️ {resource_name} 上次紫外消毒尚未登记结束和通风，禁止使用。")
+        elif bench_state == "venting":
+            remaining = ""
+            if session.get("safe_at"):
+                safe_at = parse_timestamp(session["safe_at"])
+                minutes = max(0, int((safe_at - datetime.now(SHANGHAI)).total_seconds() / 60) + 1)
+                remaining = f" 预计还需通风约 {minutes} 分钟。"
+            st.warning(f"⚠️ {resource_name} 紫外消毒已结束，正在通风，禁止使用。{remaining}")
 
 
 def render_disinfection_safety(user) -> None:
     render_header(
         "臭氧/紫外安全",
-        "登记空间臭氧/紫外开启时间、结束通风和安全确认，避免下一位同学受到臭氧伤害。",
+        "分别登记细胞间空间和两台超净工作台的臭氧/紫外开启、结束和通风时间，避免下一位同学受到伤害。",
     )
 
     st.error(
@@ -354,21 +380,50 @@ def render_disinfection_safety(user) -> None:
     )
 
     try:
-        safety_state = service().room_safety_state()
-        current = service().latest_disinfection_session()
+        equipment = [
+            item
+            for item in service().list_equipment()
+            if item.get("type") == "超净工作台"
+        ]
+    except Exception as error:
+        st.error(first_error_message(error))
+        return
+
+    resource_options = {"__room__": "细胞间空间（臭氧/紫外）"}
+    resource_options.update(
+        {
+            str(item["id"]): f'{item["name"]}（超净工作台紫外）'
+            for item in equipment
+        }
+    )
+    selected_resource = st.selectbox(
+        "消毒对象",
+        options=list(resource_options),
+        format_func=lambda value: resource_options[value],
+    )
+    selected_equipment_id = None if selected_resource == "__room__" else int(selected_resource)
+    resource_label = resource_options[selected_resource]
+
+    try:
+        if selected_equipment_id is None:
+            safety_state = service().room_safety_state()
+            current = service().latest_disinfection_session(room_only=True)
+        else:
+            safety_state = service().equipment_safety_state(selected_equipment_id)
+            current = service().latest_disinfection_session(equipment_id=selected_equipment_id)
         sessions = service().list_disinfection_sessions(limit=100)
     except Exception as error:
         st.error(first_error_message(error))
         return
 
     if safety_state == "safe":
-        st.success("✅ 当前房间未处于臭氧/紫外危险状态，可以进入使用。请进入后注意是否有异常气味。")
+        st.success(f"✅ {resource_label} 当前未处于臭氧/紫外危险状态，可以进入使用。请进入后注意是否有异常气味。")
     elif safety_state == "disinfecting":
-        st.error("🚫 当前臭氧/紫外消毒进行中，严禁进入。")
+        st.error(f"🚫 {resource_label} 当前臭氧/紫外消毒进行中，严禁进入或使用。")
     elif safety_state == "awaiting_ventilation":
-        st.error("🚫 上次消毒已超过计划结束时间，但尚未登记结束。请先结束消毒并开始通风。")
+        st.error(f"🚫 {resource_label} 上次消毒已超过计划结束时间，但尚未登记结束。请先结束消毒并开始通风。")
     elif safety_state == "venting":
-        st.warning("⏳ 当前处于通风阶段，禁止进入，等待安全时间。")
+        st.warning(f"⏳ {resource_label} 当前处于通风阶段，禁止进入或使用，等待安全时间。")
 
     if current:
         cols = st.columns(4)
@@ -397,9 +452,14 @@ def render_disinfection_safety(user) -> None:
     if safety_state == "safe":
         st.markdown("#### 登记开启臭氧/紫外消毒")
         with st.form("start_disinfection_form", border=True):
+            method_options = (
+                ["uv", "uv_ozone", "ozone"]
+                if selected_equipment_id is not None
+                else ["uv_ozone", "ozone", "uv"]
+            )
             method = st.selectbox(
                 "消毒方式",
-                ["uv_ozone", "ozone", "uv"],
+                method_options,
                 format_func=disinfection_method_label,
             )
             duration = st.slider("计划消毒时长（分钟）", min_value=10, max_value=60, value=30, step=5)
@@ -407,14 +467,19 @@ def render_disinfection_safety(user) -> None:
             submitted = st.form_submit_button("确认无人并开始消毒", type="primary", use_container_width=True)
         if submitted:
             try:
-                service().start_disinfection(method, int(duration), notes.strip())
-                st.success("臭氧/紫外消毒已登记开启，请勿让人员进入。")
+                service().start_disinfection(
+                    method,
+                    int(duration),
+                    notes.strip(),
+                    selected_equipment_id,
+                )
+                st.success(f"{resource_label} 已登记开启臭氧/紫外消毒，请勿让人员进入或使用。")
                 st.rerun()
             except Exception as error:
                 st.error(first_error_message(error))
     elif current and current.get("status") == "active":
         st.markdown("#### 结束消毒并开始通风")
-        st.caption("确认臭氧/紫外设备已经关闭后，再登记结束并开始通风。")
+        st.caption(f"确认 {resource_label} 的臭氧/紫外设备已经关闭后，再登记结束并开始通风。")
         with st.form("finish_disinfection_form", border=True):
             ventilation_minutes = st.slider(
                 "计划通风时长（分钟，最低 30 分钟）",
@@ -427,7 +492,7 @@ def render_disinfection_safety(user) -> None:
         if submitted:
             try:
                 service().finish_disinfection(current["id"], int(ventilation_minutes))
-                st.success("已登记结束，系统进入通风倒计时。")
+                st.success(f"{resource_label} 已登记结束，系统进入通风倒计时。")
                 st.rerun()
             except Exception as error:
                 st.error(first_error_message(error))
@@ -439,7 +504,7 @@ def render_disinfection_safety(user) -> None:
             if st.button("确认通风完成，标记安全", type="primary", use_container_width=True):
                 try:
                     service().confirm_disinfection_safe(current["id"])
-                    st.success("已确认通风完成，房间恢复安全使用。")
+                    st.success(f"已确认通风完成，{resource_label} 恢复安全使用。")
                     st.rerun()
                 except Exception as error:
                     st.error(first_error_message(error))
@@ -456,6 +521,7 @@ def render_disinfection_safety(user) -> None:
             history_rows.append(
                 {
                     "开始时间": format_local(row["start_at"], "%Y-%m-%d %H:%M"),
+                    "消毒对象": row.get("resource_name") or "细胞间空间",
                     "消毒方式": disinfection_method_label(row.get("method")),
                     "计划分钟": row.get("planned_duration_minutes"),
                     "结束时间": format_local(row["ended_at"], "%Y-%m-%d %H:%M") if row.get("ended_at") else "",
@@ -473,7 +539,8 @@ def render_disinfection_safety(user) -> None:
         st.divider()
         st.markdown("#### 管理员删除错误登记")
         options = {
-            str(row["id"]): f'{format_local(row["start_at"], "%Y-%m-%d %H:%M")}｜'
+            str(row["id"]): f'{row.get("resource_name") or "细胞间空间"}｜'
+            f'{format_local(row["start_at"], "%Y-%m-%d %H:%M")}｜'
             f'{disinfection_method_label(row.get("method"))}｜{row.get("started_by_name") or ""}'
             for row in sessions
         }

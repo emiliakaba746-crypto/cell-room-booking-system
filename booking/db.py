@@ -314,26 +314,54 @@ class BookingService:
             query = query.is_("read_at", None)
         return query.execute().data or []
 
-    def list_disinfection_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
-        return (
+    def list_disinfection_sessions(
+        self,
+        limit: int = 100,
+        *,
+        equipment_id: int | None = None,
+        room_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        query = (
             self.client.table("disinfection_sessions")
             .select("*")
             .order("created_at", desc=True)
             .limit(limit)
+        )
+        if room_only:
+            query = query.is_("equipment_id", None)
+        elif equipment_id is not None:
+            query = query.eq("equipment_id", equipment_id)
+        return query.execute().data or []
+
+    def list_open_disinfection_sessions(self) -> list[dict[str, Any]]:
+        return (
+            self.client.table("disinfection_sessions")
+            .select("*")
+            .in_("status", ["active", "venting"])
+            .order("created_at", desc=True)
             .execute()
             .data
             or []
         )
 
-    def latest_disinfection_session(self) -> dict[str, Any] | None:
-        response = (
+    def latest_disinfection_session(
+        self,
+        *,
+        equipment_id: int | None = None,
+        room_only: bool = False,
+    ) -> dict[str, Any] | None:
+        query = (
             self.client.table("disinfection_sessions")
             .select("*")
             .neq("status", "cancelled")
             .order("created_at", desc=True)
             .limit(1)
-            .execute()
         )
+        if room_only:
+            query = query.is_("equipment_id", None)
+        elif equipment_id is not None:
+            query = query.eq("equipment_id", equipment_id)
+        response = query.execute()
         rows = response.data or []
         return rows[0] if rows else None
 
@@ -341,11 +369,19 @@ class BookingService:
         response = self.client.rpc("room_safety_state").execute()
         return str(response.data or "safe")
 
+    def equipment_safety_state(self, equipment_id: int) -> str:
+        response = self.client.rpc(
+            "equipment_safety_state",
+            {"p_equipment_id": equipment_id},
+        ).execute()
+        return str(response.data or "safe")
+
     def start_disinfection(
         self,
         method: str,
         duration_minutes: int,
         notes: str = "",
+        equipment_id: int | None = None,
     ) -> dict[str, Any]:
         response = self.client.rpc(
             "start_disinfection",
@@ -353,6 +389,7 @@ class BookingService:
                 "p_method": method,
                 "p_duration_minutes": duration_minutes,
                 "p_notes": notes,
+                "p_equipment_id": equipment_id,
             },
         ).execute()
         data = response.data or []
