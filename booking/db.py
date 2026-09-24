@@ -79,6 +79,12 @@ class BookingService:
             return None
         return self._load_user(response.user.id, response.user.email or email)
 
+    def request_password_reset(self, email: str, redirect_to: str) -> None:
+        self.client.auth.reset_password_for_email(
+            email,
+            {"redirect_to": redirect_to},
+        )
+
     def sign_out(self) -> None:
         self.client.auth.sign_out()
 
@@ -237,6 +243,57 @@ class BookingService:
     def list_profiles(self) -> list[dict[str, Any]]:
         return self.client.table("profiles").select("*").order("created_at", desc=True).execute().data or []
 
+    def ensure_cleaning_assignment(self, friday_date: date) -> dict[str, Any]:
+        response = self.client.rpc(
+            "ensure_cleaning_assignment",
+            {"p_friday": friday_date.isoformat()},
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
+    def get_cleaning_assignment(self, friday_date: date) -> dict[str, Any] | None:
+        response = (
+            self.client.table("cleaning_assignments")
+            .select("*")
+            .eq("friday_date", friday_date.isoformat())
+            .maybe_single()
+            .execute()
+        )
+        return response.data or None
+
+    def list_cleaning_assignments(self, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        return (
+            self.client.table("cleaning_assignments")
+            .select("*")
+            .gte("friday_date", start_date.isoformat())
+            .lte("friday_date", end_date.isoformat())
+            .order("friday_date")
+            .execute()
+            .data
+            or []
+        )
+
+    def set_cleaning_assignment(
+        self,
+        friday_date: date,
+        assignee_id: str,
+        note: str = "",
+    ) -> dict[str, Any]:
+        response = self.client.rpc(
+            "set_cleaning_assignment",
+            {
+                "p_friday": friday_date.isoformat(),
+                "p_assignee_id": assignee_id,
+                "p_note": note,
+            },
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
     def usage_report(self, start_at: datetime, end_at: datetime) -> list[dict[str, Any]]:
         response = (
             self.client.table("reservation_usage_summary")
@@ -264,6 +321,7 @@ def first_error_message(error: Exception) -> str:
         if needle.lower() in message.lower():
             return friendly
     return message
+
 
 
 

@@ -18,6 +18,7 @@ class Settings:
     app_timezone: str = "Asia/Shanghai"
     initial_admin_email: str = ""
     app_name: str = "细胞间预约系统"
+    app_base_url: str = "http://localhost:8501"
 
 
 def _secret(name: str, default: str = "") -> str:
@@ -42,4 +43,5 @@ def load_settings() -> Settings:
         app_timezone=_secret("APP_TIMEZONE", "Asia/Shanghai"),
         initial_admin_email=_secret("INITIAL_ADMIN_EMAIL").strip().lower(),
         app_name=_secret("APP_NAME", "细胞间预约系统"),
+        app_base_url=_secret("APP_BASE_URL", "http://localhost:8501").strip().rstrip("/"),
     )

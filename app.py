@@ -28,13 +28,27 @@ COLLEGE_NAME = "中山大学农业与生物技术学院"
 SYSTEM_NAME = "细胞间预约系统"
 APP_FULL_NAME = f"{COLLEGE_NAME}{SYSTEM_NAME}"
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 FULL_LOGO_PATH = ASSETS_DIR / "college-logo-green.png"
 EMBLEM_PATH = ASSETS_DIR / "college-emblem-green.png"
+RESET_TEMPLATE_PATH = STATIC_DIR / "reset-password.template.html"
+RESET_PAGE_PATH = STATIC_DIR / "reset-password.html"
 
 
 def image_data_uri(path: Path) -> str:
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def ensure_reset_password_page(settings) -> None:
+    """Generate the static password-reset page from runtime secrets."""
+    if not RESET_TEMPLATE_PATH.exists():
+        return
+    page = RESET_TEMPLATE_PATH.read_text(encoding="utf-8")
+    page = page.replace("__SUPABASE_URL__", settings.supabase_url)
+    page = page.replace("__SUPABASE_ANON_KEY__", settings.supabase_anon_key)
+    page = page.replace("__APP_URL__", settings.app_base_url)
+    RESET_PAGE_PATH.write_text(page, encoding="utf-8")
 
 st.set_page_config(
     page_title=APP_FULL_NAME,
@@ -171,7 +185,7 @@ def render_login() -> None:
     render_header(SYSTEM_NAME, "两台超净工作台、四台培养箱，全天 00:00–24:00 在线预约与使用记录。")
     left, middle, right = st.columns([1, 1.35, 1])
     with middle:
-        tab_login, tab_register = st.tabs(["账号登录", "注册新账号"])
+        tab_login, tab_register, tab_forgot = st.tabs(["账号登录", "注册新账号", "找回密码"])
         with tab_login:
             with st.form("login_form", border=True):
                 email = st.text_input("邮箱", placeholder="name@example.com")
@@ -229,6 +243,24 @@ def render_login() -> None:
                             st.rerun()
                     except Exception as error:
                         st.error(first_error_message(error))
+        with tab_forgot:
+            st.caption("输入注册邮箱，系统会发送密码重置邮件。请在邮件中打开链接并设置新密码。")
+            with st.form("forgot_password_form", border=True):
+                forgot_email = st.text_input("注册邮箱", placeholder="name@example.com")
+                forgot_submitted = st.form_submit_button("发送重置邮件", type="primary", use_container_width=True)
+            if forgot_submitted:
+                if not forgot_email.strip():
+                    st.warning("请输入注册邮箱。")
+                else:
+                    try:
+                        ensure_reset_password_page(settings)
+                        service().request_password_reset(
+                            forgot_email.strip().lower(),
+                            f"{settings.app_base_url}/app/static/reset-password.html",
+                        )
+                        st.success("重置邮件已发送。请检查邮箱（包括垃圾邮件），然后按邮件中的链接设置新密码。")
+                    except Exception as error:
+                        st.error(first_error_message(error))
 
 
 def render_access_state(user) -> bool:
@@ -256,7 +288,7 @@ def render_sidebar(user) -> str:
         role = "主账号 / 管理员" if user.is_admin else "已授权成员"
         st.markdown(f"**{role}**")
         st.divider()
-        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "个人资料"]
+        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "每周五卫生安排", "个人资料"]
         if user.is_admin:
             pages += ["成员授权", "设备管理", "预约管理", "使用统计"]
         page = st.radio("功能导航", pages, label_visibility="collapsed")
@@ -868,6 +900,119 @@ def render_equipment_admin() -> None:
                 st.error(first_error_message(error))
 
 
+def next_friday(value: date | None = None) -> date:
+    current = value or date.today()
+    return current + timedelta(days=(4 - current.weekday()) % 7)
+
+
+def render_cleaning_schedule(user) -> None:
+    render_header(
+        "每周五卫生安排",
+        "根据上一周的预约使用时长和频率自动推荐本周五卫生负责人；管理员可以手动调整。",
+    )
+
+    today = date.today()
+    selected_friday = st.date_input(
+        "选择要查看的周五",
+        value=next_friday(today),
+        format="YYYY-MM-DD",
+        key="cleaning_friday",
+    )
+    if selected_friday.weekday() != 4:
+        st.warning("请选择星期五。")
+        return
+
+    try:
+        current = service().ensure_cleaning_assignment(selected_friday)
+    except Exception as error:
+        st.error(first_error_message(error))
+        current = {}
+
+    if current:
+        source_label = "系统自动计算" if current.get("assignment_source") == "auto" else "管理员调整"
+        cols = st.columns(3)
+        with cols[0]:
+            st.metric("本周五卫生负责人", current.get("assignee_name") or "未确定")
+        with cols[1]:
+            st.metric("上一周使用时长", f"{int(current.get('score_minutes') or 0) / 60:.1f} 小时")
+        with cols[2]:
+            st.metric("上一周预约次数", f"{int(current.get('reservation_count') or 0)} 次")
+        st.caption(
+            f"安排方式：{source_label}。计分方式：上一周使用分钟数 + 预约次数 × 30 分钟；"
+            "总分最高者优先，若分数相同则优先安排较久未打扫的成员。"
+        )
+        if current.get("note"):
+            st.info(f"管理员备注：{current['note']}")
+    else:
+        st.info("暂时没有可安排的卫生负责人。")
+
+    st.divider()
+    st.markdown("#### 周五卫生安排表")
+    history_rows = []
+    for delta in range(-4, 5):
+        friday = selected_friday + timedelta(weeks=delta)
+        if friday.weekday() != 4:
+            continue
+        try:
+            row = service().ensure_cleaning_assignment(friday)
+        except Exception:
+            row = {}
+        history_rows.append(
+            {
+                "日期": friday.isoformat(),
+                "卫生负责人": row.get("assignee_name") or "未确定",
+                "使用时长(小时)": round(int(row.get("score_minutes") or 0) / 60, 1),
+                "预约次数": int(row.get("reservation_count") or 0),
+                "安排方式": "管理员调整" if row.get("assignment_source") == "manual" else "系统自动",
+                "备注": row.get("note") or "",
+            }
+        )
+    st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
+
+    if user.is_admin:
+        st.divider()
+        st.markdown("#### 管理员调整卫生安排")
+        try:
+            profiles = [
+                row
+                for row in service().list_profiles()
+                if row.get("status") == "approved"
+            ]
+        except Exception as error:
+            st.error(first_error_message(error))
+            return
+        if not profiles:
+            st.info("暂无已授权成员可供调整。")
+            return
+
+        profile_options = {
+            str(row["id"]): f'{row.get("display_name") or "未命名"} · {row.get("email", "")}'
+            for row in profiles
+        }
+        profile_ids = list(profile_options)
+        current_assignee = str(current.get("assignee_id") or "")
+        default_index = profile_ids.index(current_assignee) if current_assignee in profile_ids else 0
+        assignee_id = st.selectbox(
+            "指定卫生负责人",
+            options=profile_ids,
+            index=default_index,
+            format_func=lambda value: profile_options[value],
+            key=f"cleaning_assignee_{selected_friday.isoformat()}",
+        )
+        note = st.text_input(
+            "管理员备注",
+            value=str(current.get("note") or ""),
+            placeholder="例如：请重点清洁培养箱周围台面",
+            key=f"cleaning_note_{selected_friday.isoformat()}",
+        )
+        if st.button("保存卫生安排", type="primary", key=f"save_cleaning_{selected_friday.isoformat()}"):
+            try:
+                service().set_cleaning_assignment(selected_friday, assignee_id, note.strip())
+                st.success("卫生安排已更新。")
+                st.rerun()
+            except Exception as error:
+                st.error(first_error_message(error))
+
 def render_reservations_admin(user) -> None:
     render_header("预约管理", "管理员可取消预约、标记未到，并查看全部设备占用。")
     selected_day = st.date_input("管理日期", value=date.today(), key="admin_booking_day")
@@ -1018,6 +1163,8 @@ def main() -> None:
         render_modify_booking(user)
     elif page == "使用记录":
         render_usage_history(user)
+    elif page == "每周五卫生安排":
+        render_cleaning_schedule(user)
     elif page == "个人资料":
         render_profile(user)
     elif page == "成员授权" and user.is_admin:
@@ -1032,6 +1179,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
 
 
 
