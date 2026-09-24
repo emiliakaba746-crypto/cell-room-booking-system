@@ -287,10 +287,17 @@ def render_sidebar(user) -> str:
         st.caption(f"登录：{user.display_name}")
         role = "主账号 / 管理员" if user.is_admin else "已授权成员"
         st.markdown(f"**{role}**")
+        if user.is_approved:
+            try:
+                unread = service().count_unread_messages(user.id)
+                if unread:
+                    st.warning(f"站内信未读：{unread}")
+            except Exception:
+                pass
         st.divider()
-        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "每周五卫生安排", "个人资料"]
+        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "站内信", "每周五卫生安排", "个人资料"]
         if user.is_admin:
-            pages += ["成员授权", "设备管理", "预约管理", "使用统计"]
+            pages += ["发送通知", "成员授权", "设备管理", "预约管理", "使用统计"]
         page = st.radio("功能导航", pages, label_visibility="collapsed")
         st.divider()
         if st.button("退出登录", use_container_width=True):
@@ -900,6 +907,114 @@ def render_equipment_admin() -> None:
                 st.error(first_error_message(error))
 
 
+def render_inbox(user) -> None:
+    render_header("站内信", "查看管理员发送的通知和卫生安排提醒。")
+    try:
+        unread = service().count_unread_messages(user.id)
+    except Exception as error:
+        st.error(first_error_message(error))
+        return
+
+    col_unread, col_action = st.columns([1, 2])
+    with col_unread:
+        st.metric("未读通知", f"{unread} 条")
+    with col_action:
+        st.write("")
+        if unread:
+            action_button(
+                "全部标记已读",
+                lambda: service().mark_all_messages_read(),
+                key="mark_all_messages_read",
+                success="全部站内信已标记为已读。",
+            )
+
+    unread_only = st.checkbox("仅显示未读通知", value=False)
+    try:
+        messages = service().list_internal_messages(user.id, unread_only=unread_only)
+    except Exception as error:
+        st.error(first_error_message(error))
+        return
+
+    if not messages:
+        st.info("暂无站内信。")
+        return
+
+    for message in messages:
+        is_unread = not message.get("read_at")
+        status = "未读" if is_unread else "已读"
+        title = str(message.get("title") or "无标题通知")
+        created = format_local(message.get("created_at"), "%Y-%m-%d %H:%M")
+        with st.expander(f"[{status}] {title} · {created}", expanded=is_unread):
+            st.markdown(str(message.get("content") or ""))
+            message_type = "卫生提醒" if message.get("message_type") == "cleaning" else "一般通知"
+            related = message.get("related_date")
+            related_text = f"｜关联日期：{related}" if related else ""
+            st.caption(f"发送人：{message.get('sender_name') or '管理员'}｜类型：{message_type}{related_text}")
+            if is_unread:
+                action_button(
+                    "标记已读",
+                    lambda message_id=message["id"]: service().mark_message_read(message_id),
+                    key=f"read_message_{message['id']}",
+                    success="已标记为已读。",
+                )
+
+
+def render_messages_admin(user) -> None:
+    render_header("发送通知", "向指定成员或全部已授权成员发送站内信，可用于日常通知和卫生提醒。")
+    try:
+        profiles = [row for row in service().list_profiles() if row.get("status") == "approved"]
+    except Exception as error:
+        st.error(first_error_message(error))
+        return
+
+    if not profiles:
+        st.info("暂无已授权成员。")
+        return
+
+    options = {"__all__": "全部已授权成员"}
+    options.update({str(row["id"]): f'{row.get("display_name") or "未命名"} · {row.get("email", "")}' for row in profiles})
+    recipient_id = st.selectbox("收件人", options=list(options), format_func=lambda value: options[value])
+    title = st.text_input("通知标题", placeholder="例如：本周五卫生安排提醒", max_chars=120)
+    content = st.text_area(
+        "通知内容",
+        placeholder="例如：请本周五负责卫生的同学完成台面、培养箱和地面清洁。",
+        max_chars=3000,
+    )
+    message_type = st.selectbox(
+        "通知类型",
+        ["general", "cleaning"],
+        format_func=lambda value: "卫生提醒" if value == "cleaning" else "一般通知",
+    )
+    has_related_date = st.checkbox("关联具体日期")
+    related_date = st.date_input("关联日期", value=date.today(), format="YYYY-MM-DD") if has_related_date else None
+
+    if st.button("发送站内信", type="primary", use_container_width=True):
+        if not title.strip() or not content.strip():
+            st.warning("请填写通知标题和内容。")
+            return
+        try:
+            if recipient_id == "__all__":
+                count = service().broadcast_internal_message(
+                    title.strip(),
+                    content.strip(),
+                    message_type=message_type,
+                    related_date=related_date,
+                )
+                st.success(f"已向 {count} 位成员发送站内信。")
+            else:
+                service().send_internal_message(
+                    recipient_id,
+                    title.strip(),
+                    content.strip(),
+                    message_type=message_type,
+                    related_date=related_date,
+                )
+                st.success("站内信已发送。")
+            st.rerun()
+        except Exception as error:
+            st.error(first_error_message(error))
+
+
 def next_friday(value: date | None = None) -> date:
     current = value or date.today()
     return current + timedelta(days=(4 - current.weekday()) % 7)
@@ -970,6 +1085,31 @@ def render_cleaning_schedule(user) -> None:
     st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
 
     if user.is_admin:
+        if current.get("assignee_id"):
+            st.divider()
+            st.markdown("#### 通知本周卫生负责人")
+            default_reminder = (
+                f"请 {current.get('assignee_name') or '本周负责人'} 负责 "
+                f"{selected_friday.isoformat()} 的细胞间卫生，完成后请回复管理员。"
+            )
+            reminder_content = st.text_area(
+                "提醒内容",
+                value=default_reminder,
+                max_chars=3000,
+                key=f"cleaning_reminder_{selected_friday.isoformat()}",
+            )
+            if st.button(
+                "发送卫生提醒站内信",
+                key=f"send_cleaning_reminder_{selected_friday.isoformat()}",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    service().send_cleaning_reminder(selected_friday, reminder_content.strip())
+                    st.success("卫生提醒已发送到站内信。")
+                    st.rerun()
+                except Exception as error:
+                    st.error(first_error_message(error))
         st.divider()
         st.markdown("#### 管理员调整卫生安排")
         try:
@@ -1163,10 +1303,14 @@ def main() -> None:
         render_modify_booking(user)
     elif page == "使用记录":
         render_usage_history(user)
+    elif page == "站内信":
+        render_inbox(user)
     elif page == "每周五卫生安排":
         render_cleaning_schedule(user)
     elif page == "个人资料":
         render_profile(user)
+    elif page == "发送通知" and user.is_admin:
+        render_messages_admin(user)
     elif page == "成员授权" and user.is_admin:
         render_members_admin(user)
     elif page == "设备管理" and user.is_admin:
@@ -1179,6 +1323,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

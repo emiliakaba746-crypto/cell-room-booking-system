@@ -294,6 +294,102 @@ class BookingService:
             return data[0] if data else {}
         return data
 
+    def list_internal_messages(
+        self,
+        user_id: str,
+        *,
+        all_users: bool = False,
+        unread_only: bool = False,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        query = (
+            self.client.table("internal_messages")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        if not all_users:
+            query = query.eq("recipient_id", user_id)
+        if unread_only:
+            query = query.is_("read_at", None)
+        return query.execute().data or []
+
+    def count_unread_messages(self, user_id: str) -> int:
+        response = (
+            self.client.table("internal_messages")
+            .select("id", count="exact")
+            .eq("recipient_id", user_id)
+            .is_("read_at", None)
+            .execute()
+        )
+        return int(response.count or 0)
+
+    def mark_message_read(self, message_id: str) -> None:
+        self.client.rpc("mark_message_read", {"p_message_id": message_id}).execute()
+
+    def mark_all_messages_read(self) -> None:
+        self.client.rpc("mark_all_messages_read").execute()
+
+    def send_internal_message(
+        self,
+        recipient_id: str,
+        title: str,
+        content: str,
+        *,
+        message_type: str = "general",
+        related_date: date | None = None,
+    ) -> dict[str, Any]:
+        response = self.client.rpc(
+            "send_internal_message",
+            {
+                "p_recipient_id": recipient_id,
+                "p_title": title,
+                "p_content": content,
+                "p_message_type": message_type,
+                "p_related_date": related_date.isoformat() if related_date else None,
+            },
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
+    def broadcast_internal_message(
+        self,
+        title: str,
+        content: str,
+        *,
+        message_type: str = "general",
+        related_date: date | None = None,
+    ) -> int:
+        response = self.client.rpc(
+            "broadcast_internal_message",
+            {
+                "p_title": title,
+                "p_content": content,
+                "p_message_type": message_type,
+                "p_related_date": related_date.isoformat() if related_date else None,
+            },
+        ).execute()
+        return int(response.data or 0)
+
+    def send_cleaning_reminder(
+        self,
+        friday_date: date,
+        content: str,
+    ) -> dict[str, Any]:
+        response = self.client.rpc(
+            "send_cleaning_reminder",
+            {
+                "p_friday": friday_date.isoformat(),
+                "p_content": content,
+            },
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
     def usage_report(self, start_at: datetime, end_at: datetime) -> list[dict[str, Any]]:
         response = (
             self.client.table("reservation_usage_summary")
@@ -321,6 +417,7 @@ def first_error_message(error: Exception) -> str:
         if needle.lower() in message.lower():
             return friendly
     return message
+
 
 
 
