@@ -179,10 +179,113 @@ def render_header(title: str, subtitle: str) -> None:
     )
 
 
+def render_public_dashboard() -> None:
+    st.markdown("### 公开状态看板")
+    st.caption("以下内容无需登录即可查看；预约提交、修改和臭氧/紫外登记必须登录后操作。")
+    selected_day = st.date_input(
+        "看板日期",
+        value=date.today(),
+        format="YYYY-MM-DD",
+        key="public_dashboard_day",
+    )
+
+    try:
+        dashboard = service().public_dashboard(selected_day)
+    except Exception:
+        st.info("公开看板暂时无法加载，请稍后刷新页面。")
+        return
+
+    room_state = str(dashboard.get("room_safety_state") or "safe")
+    if room_state == "safe":
+        st.success("✅ 细胞间空间当前未处于臭氧/紫外危险状态")
+    elif room_state == "disinfecting":
+        st.error("🚫 细胞间空间正在臭氧/紫外消毒，严禁进入")
+    elif room_state == "awaiting_ventilation":
+        st.error("🚫 细胞间空间消毒已超时但尚未登记结束和通风，禁止进入")
+    elif room_state == "venting":
+        st.warning("⏳ 细胞间空间正在通风，禁止进入")
+
+    equipment = dashboard.get("equipment") or []
+    benches = [item for item in equipment if item.get("type") == "超净工作台"]
+    if benches:
+        st.markdown("#### 超净工作台紫外状态")
+        bench_columns = st.columns(len(benches))
+        for column, bench in zip(bench_columns, benches):
+            state = str(bench.get("safety_state") or "safe")
+            with column:
+                if state == "safe":
+                    st.success(f"**{bench.get('name')}**\n\n安全")
+                elif state == "disinfecting":
+                    st.error(f"**{bench.get('name')}**\n\n紫外消毒中，禁止使用")
+                elif state == "awaiting_ventilation":
+                    st.error(f"**{bench.get('name')}**\n\n消毒未结束，禁止使用")
+                elif state == "venting":
+                    st.warning(f"**{bench.get('name')}**\n\n通风中，禁止使用")
+
+    st.markdown(f"#### 预约状态看板 · {selected_day.isoformat()}")
+    reservations = dashboard.get("reservations") or []
+    if not equipment:
+        st.info("暂无设备信息。")
+    else:
+        board_columns = st.columns(3)
+        status_icons = {
+            "booked": "🔵",
+            "in_use": "🟢",
+            "completed": "⚪",
+        }
+        for index, item in enumerate(equipment):
+            with board_columns[index % 3]:
+                with st.container(border=True):
+                    st.markdown(f"**{item.get('name')}**")
+                    st.caption(f"{item.get('type') or ''} · {item.get('location') or ''}")
+                    rows = [
+                        row
+                        for row in reservations
+                        if int(row.get("equipment_id") or 0) == int(item.get("id") or 0)
+                    ]
+                    if not rows:
+                        st.caption("暂无预约")
+                    else:
+                        for row in rows:
+                            icon = status_icons.get(row.get("status"), "•")
+                            status = STATUS_LABELS.get(row.get("status"), row.get("status") or "")
+                            time_text = (
+                                f'{format_local(row["start_at"], "%H:%M")}–'
+                                f'{format_local(row["end_at"], "%H:%M")}'
+                            )
+                            st.markdown(
+                                f'{icon} `{time_text}` {status} · {row.get("masked_name") or "成员"}'
+                            )
+
+    st.markdown("#### 最近臭氧/紫外登记")
+    disinfection = dashboard.get("disinfection") or []
+    if not disinfection:
+        st.caption("暂无登记记录。")
+    else:
+        history_rows = []
+        for row in disinfection[:10]:
+            history_rows.append(
+                {
+                    "消毒对象": row.get("resource_name") or "细胞间空间",
+                    "方式": disinfection_method_label(row.get("method")),
+                    "开始时间": format_local(row["start_at"], "%m-%d %H:%M"),
+                    "结束时间": format_local(row["ended_at"], "%m-%d %H:%M") if row.get("ended_at") else "",
+                    "安全时间": format_local(row["safe_at"], "%m-%d %H:%M") if row.get("safe_at") else "",
+                    "状态": disinfection_status_label(row.get("status")),
+                    "登记人": row.get("masked_operator") or "成员",
+                }
+            )
+        st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
+    st.caption("公开看板已脱敏，不显示手机号、邮箱、工号/学号和导师信息。")
+
+
 def render_login() -> None:
     settings = load_settings()
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     render_header(SYSTEM_NAME, "两台超净工作台、四台培养箱，全天 00:00–24:00 在线预约与使用记录。")
+    render_public_dashboard()
+    st.divider()
+    st.markdown("### 登录后进行操作")
     left, middle, right = st.columns([1, 1.35, 1])
     with middle:
         tab_login, tab_register, tab_forgot = st.tabs(["账号登录", "注册新账号", "找回密码"])

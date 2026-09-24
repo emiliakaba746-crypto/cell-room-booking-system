@@ -369,6 +369,14 @@ class BookingService:
         response = self.client.rpc("room_safety_state").execute()
         return str(response.data or "safe")
 
+    def public_dashboard(self, day: date) -> dict[str, Any]:
+        response = self.client.rpc(
+            "get_public_dashboard",
+            {"p_day": day.isoformat()},
+        ).execute()
+        data = response.data or {}
+        return data if isinstance(data, dict) else {}
+
     def equipment_safety_state(self, equipment_id: int) -> str:
         response = self.client.rpc(
             "equipment_safety_state",
