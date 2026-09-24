@@ -314,6 +314,85 @@ class BookingService:
             query = query.is_("read_at", None)
         return query.execute().data or []
 
+    def list_disinfection_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
+        return (
+            self.client.table("disinfection_sessions")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
+
+    def latest_disinfection_session(self) -> dict[str, Any] | None:
+        response = (
+            self.client.table("disinfection_sessions")
+            .select("*")
+            .neq("status", "cancelled")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        return rows[0] if rows else None
+
+    def room_safety_state(self) -> str:
+        response = self.client.rpc("room_safety_state").execute()
+        return str(response.data or "safe")
+
+    def start_disinfection(
+        self,
+        method: str,
+        duration_minutes: int,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        response = self.client.rpc(
+            "start_disinfection",
+            {
+                "p_method": method,
+                "p_duration_minutes": duration_minutes,
+                "p_notes": notes,
+            },
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
+    def finish_disinfection(
+        self,
+        session_id: str,
+        ventilation_minutes: int = 30,
+    ) -> dict[str, Any]:
+        response = self.client.rpc(
+            "finish_disinfection",
+            {
+                "p_session_id": session_id,
+                "p_ventilation_minutes": ventilation_minutes,
+            },
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
+    def confirm_disinfection_safe(self, session_id: str) -> dict[str, Any]:
+        response = self.client.rpc(
+            "confirm_disinfection_safe",
+            {"p_session_id": session_id},
+        ).execute()
+        data = response.data or []
+        if isinstance(data, list):
+            return data[0] if data else {}
+        return data
+
+    def delete_disinfection_session(self, session_id: str) -> None:
+        self.client.rpc(
+            "delete_disinfection_session",
+            {"p_session_id": session_id},
+        ).execute()
+
     def count_unread_messages(self, user_id: str) -> int:
         response = (
             self.client.table("internal_messages")

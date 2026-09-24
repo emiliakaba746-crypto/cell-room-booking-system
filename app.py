@@ -279,6 +279,218 @@ def render_access_state(user) -> bool:
     return True
 
 
+def disinfection_method_label(method: str) -> str:
+    return {
+        "uv_ozone": "臭氧 + 紫外",
+        "ozone": "臭氧",
+        "uv": "紫外",
+    }.get(method, method or "未填写")
+
+
+def disinfection_status_label(status: str) -> str:
+    return {
+        "active": "消毒进行中",
+        "venting": "通风中",
+        "safe": "已确认安全",
+        "cancelled": "已取消",
+    }.get(status, status or "未知")
+
+
+def render_safety_banner() -> None:
+    """Show a prominent safety banner whenever the room is not safe to enter."""
+    try:
+        safety_state = service().room_safety_state()
+    except Exception:
+        return
+
+    if safety_state == "safe":
+        return
+
+    try:
+        current = service().latest_disinfection_session()
+    except Exception:
+        current = None
+
+    if safety_state == "disinfecting":
+        st.error(
+            "⚠️ 当前细胞间正在进行臭氧/紫外消毒，严禁进入。"
+            + (
+                f" 计划结束时间：{format_local(current['expected_end_at'], '%Y-%m-%d %H:%M')}。"
+                if current and current.get("expected_end_at")
+                else ""
+            )
+        )
+    elif safety_state == "awaiting_ventilation":
+        st.error(
+            "⚠️ 上一位同学开启了臭氧/紫外消毒，但尚未登记结束和通风。"
+            "在完成通风并达到安全时间前，请勿进入细胞间。"
+        )
+    elif safety_state == "venting":
+        remaining = ""
+        if current and current.get("safe_at"):
+            safe_at = parse_timestamp(current["safe_at"])
+            minutes = max(0, int((safe_at - datetime.now(SHANGHAI)).total_seconds() / 60) + 1)
+            remaining = f" 预计还需通风约 {minutes} 分钟。"
+        st.warning(
+            "⚠️ 臭氧/紫外消毒已结束，目前处于通风阶段，禁止进入。"
+            + remaining
+            + " 请等待安全时间到达后，由在场人员确认通风完成。"
+        )
+
+
+def render_disinfection_safety(user) -> None:
+    render_header(
+        "臭氧/紫外安全",
+        "登记空间臭氧/紫外开启时间、结束通风和安全确认，避免下一位同学受到臭氧伤害。",
+    )
+
+    st.error(
+        "**安全规则（必须遵守）**\n"
+        "1. 开启前先确认房间内无人、没有正在进行的细胞操作，并关闭门窗。\n"
+        "2. 单次臭氧/紫外消毒不得超过 60 分钟，建议 30 分钟。\n"
+        "3. 消毒结束后必须关闭设备并通风至少 30 分钟；闻到刺激性气味时继续延长通风。\n"
+        "4. 系统显示安全前，任何人不得进入房间或开始使用。\n"
+        "5. 安全时间到达后，请点击“确认通风完成”，系统才会恢复正常使用。"
+    )
+
+    try:
+        safety_state = service().room_safety_state()
+        current = service().latest_disinfection_session()
+        sessions = service().list_disinfection_sessions(limit=100)
+    except Exception as error:
+        st.error(first_error_message(error))
+        return
+
+    if safety_state == "safe":
+        st.success("✅ 当前房间未处于臭氧/紫外危险状态，可以进入使用。请进入后注意是否有异常气味。")
+    elif safety_state == "disinfecting":
+        st.error("🚫 当前臭氧/紫外消毒进行中，严禁进入。")
+    elif safety_state == "awaiting_ventilation":
+        st.error("🚫 上次消毒已超过计划结束时间，但尚未登记结束。请先结束消毒并开始通风。")
+    elif safety_state == "venting":
+        st.warning("⏳ 当前处于通风阶段，禁止进入，等待安全时间。")
+
+    if current:
+        cols = st.columns(4)
+        with cols[0]:
+            st.metric("当前状态", disinfection_status_label(current.get("status")))
+        with cols[1]:
+            st.metric("消毒方式", disinfection_method_label(current.get("method")))
+        with cols[2]:
+            st.metric("登记人", current.get("started_by_name") or "未填写")
+        with cols[3]:
+            if current.get("safe_at"):
+                st.metric("预计安全时间", format_local(current["safe_at"], "%H:%M"))
+            elif current.get("expected_end_at"):
+                st.metric("预计消毒结束", format_local(current["expected_end_at"], "%H:%M"))
+            else:
+                st.metric("预计时间", "未填写")
+        st.caption(
+            f"开始时间：{format_local(current['start_at'], '%Y-%m-%d %H:%M')}"
+            + (f"｜结束时间：{format_local(current['ended_at'], '%Y-%m-%d %H:%M')}" if current.get("ended_at") else "")
+            + (f"｜通风开始：{format_local(current['ventilation_started_at'], '%Y-%m-%d %H:%M')}" if current.get("ventilation_started_at") else "")
+        )
+        if current.get("notes"):
+            st.info(f"登记备注：{current['notes']}")
+
+    st.divider()
+    if safety_state == "safe":
+        st.markdown("#### 登记开启臭氧/紫外消毒")
+        with st.form("start_disinfection_form", border=True):
+            method = st.selectbox(
+                "消毒方式",
+                ["uv_ozone", "ozone", "uv"],
+                format_func=disinfection_method_label,
+            )
+            duration = st.slider("计划消毒时长（分钟）", min_value=10, max_value=60, value=30, step=5)
+            notes = st.text_input("备注（选填）", placeholder="例如：培养箱和操作台全面消毒")
+            submitted = st.form_submit_button("确认无人并开始消毒", type="primary", use_container_width=True)
+        if submitted:
+            try:
+                service().start_disinfection(method, int(duration), notes.strip())
+                st.success("臭氧/紫外消毒已登记开启，请勿让人员进入。")
+                st.rerun()
+            except Exception as error:
+                st.error(first_error_message(error))
+    elif current and current.get("status") == "active":
+        st.markdown("#### 结束消毒并开始通风")
+        st.caption("确认臭氧/紫外设备已经关闭后，再登记结束并开始通风。")
+        with st.form("finish_disinfection_form", border=True):
+            ventilation_minutes = st.slider(
+                "计划通风时长（分钟，最低 30 分钟）",
+                min_value=30,
+                max_value=120,
+                value=30,
+                step=5,
+            )
+            submitted = st.form_submit_button("结束消毒并开始通风", type="primary", use_container_width=True)
+        if submitted:
+            try:
+                service().finish_disinfection(current["id"], int(ventilation_minutes))
+                st.success("已登记结束，系统进入通风倒计时。")
+                st.rerun()
+            except Exception as error:
+                st.error(first_error_message(error))
+    elif safety_state == "venting" and current:
+        safe_at = parse_timestamp(current["safe_at"]) if current.get("safe_at") else None
+        if safe_at and datetime.now(SHANGHAI) >= safe_at:
+            st.markdown("#### 确认通风完成")
+            st.warning("请先确认房间没有明显刺激性气味，再点击确认。确认后其他同学才能进入。")
+            if st.button("确认通风完成，标记安全", type="primary", use_container_width=True):
+                try:
+                    service().confirm_disinfection_safe(current["id"])
+                    st.success("已确认通风完成，房间恢复安全使用。")
+                    st.rerun()
+                except Exception as error:
+                    st.error(first_error_message(error))
+        else:
+            st.info("通风时间尚未达到安全标准，请继续通风并等待。")
+
+    st.divider()
+    st.markdown("#### 臭氧/紫外登记历史")
+    if not sessions:
+        st.info("暂无臭氧/紫外登记记录。")
+    else:
+        history_rows = []
+        for row in sessions:
+            history_rows.append(
+                {
+                    "开始时间": format_local(row["start_at"], "%Y-%m-%d %H:%M"),
+                    "消毒方式": disinfection_method_label(row.get("method")),
+                    "计划分钟": row.get("planned_duration_minutes"),
+                    "结束时间": format_local(row["ended_at"], "%Y-%m-%d %H:%M") if row.get("ended_at") else "",
+                    "通风开始": format_local(row["ventilation_started_at"], "%Y-%m-%d %H:%M") if row.get("ventilation_started_at") else "",
+                    "安全时间": format_local(row["safe_at"], "%Y-%m-%d %H:%M") if row.get("safe_at") else "",
+                    "状态": disinfection_status_label(row.get("status")),
+                    "登记人": row.get("started_by_name") or "",
+                    "结束人": row.get("ended_by_name") or "",
+                    "备注": row.get("notes") or "",
+                }
+            )
+        st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
+
+    if user.is_admin and sessions:
+        st.divider()
+        st.markdown("#### 管理员删除错误登记")
+        options = {
+            str(row["id"]): f'{format_local(row["start_at"], "%Y-%m-%d %H:%M")}｜'
+            f'{disinfection_method_label(row.get("method"))}｜{row.get("started_by_name") or ""}'
+            for row in sessions
+        }
+        session_id = st.selectbox("选择登记记录", options=list(options), format_func=lambda value: options[value])
+        confirm_delete = st.checkbox("确认永久删除这条消毒登记", key=f"confirm_delete_disinfection_{session_id}")
+        if st.button("删除消毒登记", key=f"delete_disinfection_{session_id}", type="primary"):
+            if not confirm_delete:
+                st.warning("请先勾选确认删除。")
+            else:
+                try:
+                    service().delete_disinfection_session(session_id)
+                    st.success("消毒登记已删除。")
+                    st.rerun()
+                except Exception as error:
+                    st.error(first_error_message(error))
+
+
 def render_sidebar(user) -> str:
     with st.sidebar:
         st.image(str(EMBLEM_PATH), width=96)
@@ -295,7 +507,7 @@ def render_sidebar(user) -> str:
             except Exception:
                 pass
         st.divider()
-        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "站内信", "每周五卫生安排", "个人资料"]
+        pages = ["预约日历", "我的预约", "修改预约", "使用记录", "站内信", "臭氧/紫外安全", "每周五卫生安排", "个人资料"]
         if user.is_admin:
             pages += ["发送通知", "成员授权", "设备管理", "预约管理", "使用统计"]
         page = st.radio("功能导航", pages, label_visibility="collapsed")
@@ -1295,6 +1507,7 @@ def main() -> None:
     page = render_sidebar(user)
     if not render_access_state(user):
         return
+    render_safety_banner()
     if page == "预约日历":
         render_calendar(user)
     elif page == "我的预约":
@@ -1305,6 +1518,8 @@ def main() -> None:
         render_usage_history(user)
     elif page == "站内信":
         render_inbox(user)
+    elif page == "臭氧/紫外安全":
+        render_disinfection_safety(user)
     elif page == "每周五卫生安排":
         render_cleaning_schedule(user)
     elif page == "个人资料":
