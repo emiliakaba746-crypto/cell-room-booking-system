@@ -141,6 +141,28 @@ STATUS_LABELS = {
 }
 ROLE_LABELS = {"admin": "管理员", "member": "成员"}
 PROFILE_STATUS_LABELS = {"pending": "待审批", "approved": "已授权", "suspended": "已停用"}
+ROOM_LABELS = {"cell_room": "细胞间", "flow_room": "流式细胞间"}
+ROOM_OPTIONS = ["cell_room", "flow_room"]
+ROOM_LABEL_TO_KEY = {label: key for key, label in ROOM_LABELS.items()}
+EQUIPMENT_TYPE_OPTIONS = ["超净工作台", "培养箱", "流式细胞仪", "其他"]
+
+
+def room_label(room_key: str | None, *, full: bool = False) -> str:
+    """Human readable area name; full=True appends 空间 for room-level wording."""
+    key = room_key or "cell_room"
+    label = ROOM_LABELS.get(key, key)
+    return f"{label}空间" if full else label
+
+
+def safety_state_display(state: str) -> tuple[str, str]:
+    """Map a safety-state code to (streamlit method name, message)."""
+    mapping = {
+        "safe": ("success", "✅ 安全，可以进入"),
+        "disinfecting": ("error", "🚫 臭氧/紫外消毒进行中，严禁进入"),
+        "awaiting_ventilation": ("error", "🚫 上次消毒尚未登记结束和通风，禁止进入"),
+        "venting": ("warning", "⏳ 通风中，禁止进入"),
+    }
+    return mapping.get(state, ("info", f"状态：{state}"))
 
 
 def service() -> BookingService:
@@ -195,15 +217,23 @@ def render_public_dashboard() -> None:
         st.info("公开看板暂时无法加载，请稍后刷新页面。")
         return
 
-    room_state = str(dashboard.get("room_safety_state") or "safe")
-    if room_state == "safe":
-        st.success("✅ 细胞间空间当前未处于臭氧/紫外危险状态")
-    elif room_state == "disinfecting":
-        st.error("🚫 细胞间空间正在臭氧/紫外消毒，严禁进入")
-    elif room_state == "awaiting_ventilation":
-        st.error("🚫 细胞间空间消毒已超时但尚未登记结束和通风，禁止进入")
-    elif room_state == "venting":
-        st.warning("⏳ 细胞间空间正在通风，禁止进入")
+    rooms = dashboard.get("rooms") or []
+    if not rooms:
+        rooms = [
+            {
+                "room_key": "cell_room",
+                "name": room_label("cell_room", full=True),
+                "safety_state": dashboard.get("room_safety_state") or "safe",
+            }
+        ]
+
+    st.markdown("#### 区域臭氧/紫外状态")
+    room_columns = st.columns(len(rooms))
+    for column, room in zip(room_columns, rooms):
+        state = str(room.get("safety_state") or "safe")
+        kind, message = safety_state_display(state)
+        with column:
+            getattr(st, kind)(f"**{room.get('name') or room_label(room.get('room_key'), full=True)}**\n\n{message}")
 
     equipment = dashboard.get("equipment") or []
     benches = [item for item in equipment if item.get("type") == "超净工作台"]
@@ -212,50 +242,63 @@ def render_public_dashboard() -> None:
         bench_columns = st.columns(len(benches))
         for column, bench in zip(bench_columns, benches):
             state = str(bench.get("safety_state") or "safe")
+            kind, message = safety_state_display(state)
             with column:
-                if state == "safe":
-                    st.success(f"**{bench.get('name')}**\n\n安全")
-                elif state == "disinfecting":
-                    st.error(f"**{bench.get('name')}**\n\n紫外消毒中，禁止使用")
-                elif state == "awaiting_ventilation":
-                    st.error(f"**{bench.get('name')}**\n\n消毒未结束，禁止使用")
-                elif state == "venting":
-                    st.warning(f"**{bench.get('name')}**\n\n通风中，禁止使用")
+                getattr(st, kind)(f"**{bench.get('name')}**\n\n{message}")
 
     st.markdown(f"#### 预约状态看板 · {selected_day.isoformat()}")
     reservations = dashboard.get("reservations") or []
     if not equipment:
         st.info("暂无设备信息。")
     else:
-        board_columns = st.columns(3)
         status_icons = {
             "booked": "🔵",
             "in_use": "🟢",
             "completed": "⚪",
         }
-        for index, item in enumerate(equipment):
-            with board_columns[index % 3]:
-                with st.container(border=True):
-                    st.markdown(f"**{item.get('name')}**")
-                    st.caption(f"{item.get('type') or ''} · {item.get('location') or ''}")
-                    rows = [
-                        row
-                        for row in reservations
-                        if int(row.get("equipment_id") or 0) == int(item.get("id") or 0)
-                    ]
-                    if not rows:
-                        st.caption("暂无预约")
-                    else:
-                        for row in rows:
-                            icon = status_icons.get(row.get("status"), "•")
-                            status = STATUS_LABELS.get(row.get("status"), row.get("status") or "")
-                            time_text = (
-                                f'{format_local(row["start_at"], "%H:%M")}–'
-                                f'{format_local(row["end_at"], "%H:%M")}'
-                            )
-                            st.markdown(
-                                f'{icon} `{time_text}` {status} · {row.get("masked_name") or "成员"}'
-                            )
+        room_order = [room.get("room_key") or "cell_room" for room in rooms]
+        room_order += [
+            item.get("room_key") or "cell_room"
+            for item in equipment
+            if (item.get("room_key") or "cell_room") not in room_order
+        ]
+        for room_key in dict.fromkeys(room_order):
+            room_items = [
+                item
+                for item in equipment
+                if (item.get("room_key") or "cell_room") == room_key
+            ]
+            if not room_items:
+                continue
+            st.markdown(f"**🏠 {room_label(room_key)}**")
+            board_columns = st.columns(3)
+            for index, item in enumerate(room_items):
+                with board_columns[index % 3]:
+                    with st.container(border=True):
+                        st.markdown(f"**{item.get('name')}**")
+                        st.caption(f"{item.get('type') or ''} · {item.get('location') or ''}")
+                        state = str(item.get("safety_state") or "safe")
+                        if state != "safe":
+                            kind, message = safety_state_display(state)
+                            getattr(st, kind)(message)
+                        rows = [
+                            row
+                            for row in reservations
+                            if int(row.get("equipment_id") or 0) == int(item.get("id") or 0)
+                        ]
+                        if not rows:
+                            st.caption("暂无预约")
+                        else:
+                            for row in rows:
+                                icon = status_icons.get(row.get("status"), "•")
+                                status = STATUS_LABELS.get(row.get("status"), row.get("status") or "")
+                                time_text = (
+                                    f'{format_local(row["start_at"], "%H:%M")}–'
+                                    f'{format_local(row["end_at"], "%H:%M")}'
+                                )
+                                st.markdown(
+                                    f'{icon} `{time_text}` {status} · {row.get("masked_name") or "成员"}'
+                                )
 
     st.markdown("#### 最近臭氧/紫外登记")
     disinfection = dashboard.get("disinfection") or []
@@ -282,7 +325,10 @@ def render_public_dashboard() -> None:
 def render_login() -> None:
     settings = load_settings()
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    render_header(SYSTEM_NAME, "两台超净工作台、四台培养箱，全天 00:00–24:00 在线预约与使用记录。")
+    render_header(
+        SYSTEM_NAME,
+        "两台超净工作台、四台培养箱、两台流式细胞仪（细胞间 / 流式细胞间），全天 00:00–24:00 在线预约与紫外登记。",
+    )
     render_public_dashboard()
     st.divider()
     st.markdown("### 登录后进行操作")
@@ -400,21 +446,29 @@ def disinfection_status_label(status: str) -> str:
 
 
 def render_safety_banner() -> None:
-    """Show a prominent safety banner whenever the room is not safe to enter."""
-    try:
-        safety_state = service().room_safety_state()
-    except Exception:
-        return
+    """Show a prominent safety banner whenever an area is not safe to enter."""
+    for room_key in ROOM_OPTIONS:
+        label = room_label(room_key, full=True)
+        room_name = room_label(room_key)
+        try:
+            safety_state = service().room_safety_state(room_key)
+        except Exception:
+            continue
 
-    try:
-        current = service().latest_disinfection_session(room_only=True)
-    except Exception:
-        current = None
+        try:
+            current = service().latest_disinfection_session(
+                room_only=True,
+                room_key=room_key,
+            )
+        except Exception:
+            current = None
 
-    if safety_state != "safe":
+        if safety_state == "safe":
+            continue
+
         if safety_state == "disinfecting":
             st.error(
-                "⚠️ 当前细胞间空间正在进行臭氧/紫外消毒，严禁进入。"
+                f"⚠️ 当前{label}正在进行臭氧/紫外消毒，严禁进入。"
                 + (
                     f" 计划结束时间：{format_local(current['expected_end_at'], '%Y-%m-%d %H:%M')}。"
                     if current and current.get("expected_end_at")
@@ -423,8 +477,8 @@ def render_safety_banner() -> None:
             )
         elif safety_state == "awaiting_ventilation":
             st.error(
-                "⚠️ 上一位同学开启了细胞间空间臭氧/紫外消毒，但尚未登记结束和通风。"
-                "在完成通风并达到安全时间前，请勿进入细胞间。"
+                f"⚠️ 上一位同学开启了{label}臭氧/紫外消毒，但尚未登记结束和通风。"
+                f"在完成通风并达到安全时间前，请勿进入{room_name}。"
             )
         elif safety_state == "venting":
             remaining = ""
@@ -433,7 +487,7 @@ def render_safety_banner() -> None:
                 minutes = max(0, int((safe_at - datetime.now(SHANGHAI)).total_seconds() / 60) + 1)
                 remaining = f" 预计还需通风约 {minutes} 分钟。"
             st.warning(
-                "⚠️ 细胞间空间消毒已结束，目前处于通风阶段，禁止进入。"
+                f"⚠️ {label}消毒已结束，目前处于通风阶段，禁止进入。"
                 + remaining
                 + " 请等待安全时间到达后，由在场人员确认通风完成。"
             )
@@ -470,7 +524,7 @@ def render_safety_banner() -> None:
 def render_disinfection_safety(user) -> None:
     render_header(
         "臭氧/紫外安全",
-        "分别登记细胞间空间和两台超净工作台的臭氧/紫外开启、结束和通风时间，避免下一位同学受到伤害。",
+        "分别登记细胞间、流式细胞间两个区域空间和两台超净工作台的臭氧/紫外开启、结束和通风时间，避免下一位同学受到伤害。",
     )
 
     st.error(
@@ -492,7 +546,10 @@ def render_disinfection_safety(user) -> None:
         st.error(first_error_message(error))
         return
 
-    resource_options = {"__room__": "细胞间空间（臭氧/紫外）"}
+    resource_options = {
+        f"__room__:{room_key}": f"{room_label(room_key, full=True)}（区域臭氧/紫外）"
+        for room_key in ROOM_OPTIONS
+    }
     resource_options.update(
         {
             str(item["id"]): f'{item["name"]}（超净工作台紫外）'
@@ -504,13 +561,28 @@ def render_disinfection_safety(user) -> None:
         options=list(resource_options),
         format_func=lambda value: resource_options[value],
     )
-    selected_equipment_id = None if selected_resource == "__room__" else int(selected_resource)
+    if selected_resource.startswith("__room__:"):
+        selected_equipment_id = None
+        selected_room_key = selected_resource.split(":", 1)[1]
+    else:
+        selected_equipment_id = int(selected_resource)
+        selected_room_key = next(
+            (
+                (item.get("room_key") or "cell_room")
+                for item in equipment
+                if str(item.get("id")) == selected_resource
+            ),
+            "cell_room",
+        )
     resource_label = resource_options[selected_resource]
 
     try:
         if selected_equipment_id is None:
-            safety_state = service().room_safety_state()
-            current = service().latest_disinfection_session(room_only=True)
+            safety_state = service().room_safety_state(selected_room_key)
+            current = service().latest_disinfection_session(
+                room_only=True,
+                room_key=selected_room_key,
+            )
         else:
             safety_state = service().equipment_safety_state(selected_equipment_id)
             current = service().latest_disinfection_session(equipment_id=selected_equipment_id)
@@ -575,6 +647,7 @@ def render_disinfection_safety(user) -> None:
                     int(duration),
                     notes.strip(),
                     selected_equipment_id,
+                    selected_room_key,
                 )
                 st.success(f"{resource_label} 已登记开启臭氧/紫外消毒，请勿让人员进入或使用。")
                 st.rerun()
@@ -624,6 +697,7 @@ def render_disinfection_safety(user) -> None:
             history_rows.append(
                 {
                     "开始时间": format_local(row["start_at"], "%Y-%m-%d %H:%M"),
+                    "区域": room_label(row.get("room_key")),
                     "消毒对象": row.get("resource_name") or "细胞间空间",
                     "消毒方式": disinfection_method_label(row.get("method")),
                     "计划分钟": row.get("planned_duration_minutes"),
@@ -823,11 +897,12 @@ def render_calendar(user) -> None:
     st.markdown("#### 新建预约")
     st.warning(
         "**使用前温馨提示**\n"
-        "1. 使用前先做好台面、培养箱内壁及手部消毒，检查设备状态和耗材。\n"
-        "2. 全程严格执行无菌操作，穿戴实验服、口罩和手套。\n"
-        "3. 不得将污染、破损或来源不明的培养物放入工作台或培养箱。\n"
-        "4. 使用后及时清理台面、内腔和废弃物，发现污染立即停用并报告管理员。\n"
-        "5. 按时开始和结束使用，离开前关闭设备、气源和照明，带走个人物品。"
+        "1. 使用前先做好台面、培养箱内壁、流式细胞仪进样区及手部消毒，检查设备状态和耗材。\n"
+        "2. 全程严格执行无菌操作，穿戴实验服、口罩和手套；进入流式细胞间同样需要经过一更、二更。\n"
+        "3. 不得将污染、破损或来源不明的培养物放入工作台、培养箱或流式细胞仪。\n"
+        "4. 使用后及时清理台面、内腔、进样区和废弃物，发现污染立即停用并报告管理员。\n"
+        "5. 按时开始和结束使用，离开前关闭设备、气源、照明和流式细胞仪电源，带走个人物品。\n"
+        "6. 进入任一区域前，请先在本系统确认该区域臭氧/紫外状态为“安全”，禁止在消毒或通风期间进入。"
     )
     with st.form("booking_form", border=True):
         resource_names = {int(item["id"]): f'{item["name"]} · {item.get("location") or ""}' for item in equipment}
@@ -853,15 +928,19 @@ def render_calendar(user) -> None:
             "培养的细胞类型（必填）",
             placeholder="例如：HEK293、A549、原代神经细胞等；如不培养细胞请填写“无”",
         )
-        confirmed = st.checkbox("我已阅读并确认遵守以上使用事项")
+        # 注意：不要把 submit 按钮设置成 disabled=not confirmed。
+        # Streamlit 表单内的控件在提交前不会触发重跑，disabled 会一直为 True，
+        # 导致按钮永久灰色不可点。改为提交时校验，未勾选则拒绝创建预约。
+        confirmed = st.checkbox("我已阅读并确认遵守以上使用事项（未勾选无法提交）")
         submitted = st.form_submit_button(
             "提交预约",
             type="primary",
             use_container_width=True,
-            disabled=not confirmed,
         )
     if submitted:
-        if not purpose.strip():
+        if not confirmed:
+            st.error("请先勾选“我已阅读并确认遵守以上使用事项”。")
+        elif not purpose.strip():
             st.error("请填写预约使用目的。")
         elif not cell_type.strip():
             st.error("请填写培养的细胞类型；如不培养细胞请填写“无”。")
@@ -1220,7 +1299,7 @@ def render_members_admin(user) -> None:
 
 
 def render_equipment_admin() -> None:
-    render_header("设备管理", "维护超净工作台和培养箱的名称、位置与启用状态。")
+    render_header("设备管理", "维护细胞间与流式细胞间内各设备的名称、所属区域、位置与启用状态。")
     try:
         equipment = service().list_equipment(include_inactive=True)
     except Exception as error:
@@ -1232,6 +1311,7 @@ def render_equipment_admin() -> None:
             {
                 "ID": item["id"],
                 "名称": item["name"],
+                "区域": ROOM_LABELS.get(item.get("room_key") or "cell_room", "细胞间"),
                 "类型": item.get("type", ""),
                 "位置": item.get("location", ""),
                 "排序": item.get("sort_order", 0),
@@ -1244,7 +1324,8 @@ def render_equipment_admin() -> None:
         hide_index=True,
         disabled=["ID"],
         column_config={
-            "类型": st.column_config.SelectboxColumn(options=["超净工作台", "培养箱", "其他"]),
+            "区域": st.column_config.SelectboxColumn(options=list(ROOM_LABELS.values())),
+            "类型": st.column_config.SelectboxColumn(options=EQUIPMENT_TYPE_OPTIONS),
             "启用": st.column_config.CheckboxColumn(),
         },
         key="equipment_editor",
@@ -1255,6 +1336,7 @@ def render_equipment_admin() -> None:
                 service().upsert_equipment(
                     equipment_id=int(row["ID"]) if pd.notna(row["ID"]) else None,
                     name=str(row["名称"]).strip(),
+                    room_key=ROOM_LABEL_TO_KEY.get(str(row.get("区域", "")).strip(), "cell_room"),
                     equipment_type=str(row["类型"]).strip(),
                     location=str(row["位置"]).strip(),
                     sort_order=int(row["排序"]),
@@ -1268,7 +1350,8 @@ def render_equipment_admin() -> None:
     with st.expander("新增设备"):
         with st.form("new_equipment"):
             name = st.text_input("名称")
-            equipment_type = st.selectbox("类型", ["超净工作台", "培养箱", "其他"])
+            room_key_label = st.selectbox("所属区域", list(ROOM_LABELS.values()))
+            equipment_type = st.selectbox("类型", EQUIPMENT_TYPE_OPTIONS)
             location = st.text_input("位置")
             sort_order = st.number_input("排序", min_value=0, max_value=999, value=100)
             active = st.checkbox("启用", value=True)
@@ -1278,6 +1361,7 @@ def render_equipment_admin() -> None:
                 service().upsert_equipment(
                     equipment_id=None,
                     name=name.strip(),
+                    room_key=ROOM_LABEL_TO_KEY.get(room_key_label, "cell_room"),
                     equipment_type=equipment_type,
                     location=location.strip(),
                     sort_order=int(sort_order),

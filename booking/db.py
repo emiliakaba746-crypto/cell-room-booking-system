@@ -227,6 +227,7 @@ class BookingService:
         location: str,
         sort_order: int,
         active: bool,
+        room_key: str = "cell_room",
     ) -> None:
         payload = {
             "name": name,
@@ -234,6 +235,7 @@ class BookingService:
             "location": location,
             "sort_order": sort_order,
             "active": active,
+            "room_key": room_key,
         }
         if equipment_id:
             self.client.table("equipment").update(payload).eq("id", equipment_id).execute()
@@ -320,6 +322,7 @@ class BookingService:
         *,
         equipment_id: int | None = None,
         room_only: bool = False,
+        room_key: str | None = None,
     ) -> list[dict[str, Any]]:
         query = (
             self.client.table("disinfection_sessions")
@@ -327,6 +330,8 @@ class BookingService:
             .order("created_at", desc=True)
             .limit(limit)
         )
+        if room_key:
+            query = query.eq("room_key", room_key)
         if room_only:
             query = query.is_("equipment_id", None)
         elif equipment_id is not None:
@@ -349,6 +354,7 @@ class BookingService:
         *,
         equipment_id: int | None = None,
         room_only: bool = False,
+        room_key: str | None = None,
     ) -> dict[str, Any] | None:
         query = (
             self.client.table("disinfection_sessions")
@@ -357,6 +363,8 @@ class BookingService:
             .order("created_at", desc=True)
             .limit(1)
         )
+        if room_key:
+            query = query.eq("room_key", room_key)
         if room_only:
             query = query.is_("equipment_id", None)
         elif equipment_id is not None:
@@ -365,8 +373,11 @@ class BookingService:
         rows = response.data or []
         return rows[0] if rows else None
 
-    def room_safety_state(self) -> str:
-        response = self.client.rpc("room_safety_state").execute()
+    def room_safety_state(self, room_key: str = "cell_room") -> str:
+        response = self.client.rpc(
+            "room_safety_state_for",
+            {"p_room_key": room_key},
+        ).execute()
         return str(response.data or "safe")
 
     def public_dashboard(self, day: date) -> dict[str, Any]:
@@ -390,6 +401,7 @@ class BookingService:
         duration_minutes: int,
         notes: str = "",
         equipment_id: int | None = None,
+        room_key: str = "cell_room",
     ) -> dict[str, Any]:
         response = self.client.rpc(
             "start_disinfection",
@@ -398,6 +410,7 @@ class BookingService:
                 "p_duration_minutes": duration_minutes,
                 "p_notes": notes,
                 "p_equipment_id": equipment_id,
+                "p_room_key": room_key,
             },
         ).execute()
         data = response.data or []
